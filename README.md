@@ -29,7 +29,7 @@ A Python-based, differentiable, massively parallel lattice Boltzmann library for
       Droplet impingement on an inclined surface.
     </td>
    <td width="50%" align="center"> 
-     <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/pool_boiling_3D.gif" alt="Two-dimensional pool boiling" width="105%"> -->
+     <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/pool_boiling_3D.gif" alt="Two-dimensional pool boiling" width="105%">
      <br>
      Three-dimensional pool boiling.
    </td>
