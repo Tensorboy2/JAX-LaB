@@ -24,27 +24,15 @@ A Python-based, differentiable, massively parallel lattice Boltzmann library for
   </tr>
   <tr>
     <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/rayleigh_taylor_2d.gif" alt="Rayleigh-Taylor instability" width="105%">
-      <br>
-      Rayleigh-Taylor instability.
-    </td>
-    <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/pool_boiling_3D.gif" alt="Two-dimensional pool boiling" width="105%">
-      <br>
-      Three-dimensional pool boiling.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center">
       <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/contact_angle_hysteresis.gif" alt="Droplet impingement on an inclined surface" width="105%">
       <br>
       Droplet impingement on an inclined surface.
     </td>
-    <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/droplet_funnel.gif" alt="Droplet growth from a capillary" width="105%">
-      <br>
-      Droplet growth from a capillary (in situ render).
-    </td>
+   <td width="50%" align="center"> 
+     <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/pool_boiling_3D.gif" alt="Two-dimensional pool boiling" width="105%"> -->
+     <br>
+     Three-dimensional pool boiling.
+   </td>
   </tr>
 </table>
 <div align="center">
