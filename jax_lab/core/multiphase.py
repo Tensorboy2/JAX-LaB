@@ -1242,9 +1242,9 @@ class Multiphase(LBMBase):
 
     def _neighbor_stencil_m(self, field, weights):
         """
-        Sum a scalar (single-channel) field over its lattice neighbors, weighted per direction, using local
-        jnp.roll for every axis and exactly one x-halo exchange per distinct x-shift shared by every lattice
-        direction with that shift (-1, 0 or +1 for every lattice this library supports).
+        Sum a scalar (single-channel) field over its lattice neighbors, weighted per direction: out = sum_i w_i field(x - c_i).
+        The field is padded once (one-cell x halo exchanged between devices, periodic wrap in y/z) and every neighbor is a
+        static slice of the padded array, so XLA fuses the whole stencil into a single loop.
 
         Bound to static weights via functools.partial: the G_ff-weighted neighbor sum used by
         compute_average_density's wetting denominator (scalar_neighbor_sum, scalar weights) and the MRT surface-tension
@@ -1263,28 +1263,27 @@ class Multiphase(LBMBase):
         (..., dim) for vector weights.
         """
         field = field.astype(self.precision_policy.compute_dtype)
-        x_shifted = {0: field}
-        for x_shift in (1, -1):
-            shifted = jnp.roll(field, x_shift, axis=0)
-            if x_shift == 1:
-                x_shifted[1] = shifted.at[:1].set(self.send_right(field[-1:], "x"))
-            else:
-                x_shifted[-1] = shifted.at[-1:].set(self.send_left(field[:1], "x"))
+        left = self.send_right(field[-1:], "x")
+        right = self.send_left(field[:1], "x")
+        padded = jnp.concatenate((left, field, right), axis=0)
+        padded = jnp.pad(padded, ((0, 0),) + ((1, 1),) * (self.dim - 1) + ((0, 0),), mode="wrap")
+        spatial = field.shape[:-1]
 
-        directions = np.array(self.lattice.c).T
-        is_vector = weights.ndim == 2
-        out_channels = weights.shape[0] if is_vector else 1
-        total = jnp.zeros((*field.shape[:-1], out_channels), dtype=self.precision_policy.compute_dtype)
-        for q_index, direction in enumerate(directions):
-            w = weights[:, q_index] if is_vector else weights[q_index]
-            if np.all(w == 0.0):
+        weights = np.asarray(weights, dtype=np.float64)
+        rows = weights if weights.ndim == 2 else weights[None, :]
+        totals = [None] * rows.shape[0]
+        for q_index, direction in enumerate(np.asarray(self.lattice.c).T):
+            column = rows[:, q_index]
+            if np.all(column == 0.0):
                 continue
-            base = x_shifted[int(direction[0])]
-            remaining_axes = tuple(int(component) for component in direction[1 : self.dim])
-            if any(remaining_axes):
-                base = jnp.roll(base, remaining_axes, axis=tuple(range(1, self.dim)))
-            total = total + base * jnp.asarray(w, dtype=self.precision_policy.compute_dtype)
-        return total
+            value = padded[tuple(slice(1 - int(c), 1 - int(c) + n) for c, n in zip(direction[: self.dim], spatial, strict=True))]
+            for channel, w in enumerate(column):
+                if w == 0.0:
+                    continue
+                term = value * float(w)
+                totals[channel] = term if totals[channel] is None else totals[channel] + term
+        totals = [t if t is not None else jnp.zeros_like(field) for t in totals]
+        return jnp.concatenate(totals, axis=-1)
 
     def _build_efm_gradient_offsets(self):
         """
@@ -1314,7 +1313,7 @@ class Multiphase(LBMBase):
                 weights[offset] = weights.get(offset, np.zeros(self.dim)) + g * coefficient * direction
         return tuple((offset, tuple(float(v) for v in vector)) for offset, vector in weights.items())
 
-    def _gradient_stencil_m(self, field):
+    def _gradient_stencil_m(self, field, weights=None):
         """
         Fourth-order isotropic EFM gradient of a scalar field (local shard).
 
@@ -1325,9 +1324,12 @@ class Multiphase(LBMBase):
         ----------
         field (jax.numpy.ndarray): Local shard of a scalar field, shape (nx, ny, 1) or (nx, ny, nz, 1).
 
+        weights (numpy.ndarray, optional): (out_channels, q) nearest-neighbor weights. When given, the weighted sums
+            sum_i w_i field(x - c_i) (as in _neighbor_stencil_m) are appended from the same padded array.
+
         Returns
         -------
-        (jax.numpy.ndarray): Gradient, shape (nx, ny, 2) or (nx, ny, nz, 3).
+        (jax.numpy.ndarray): Gradient, shape (nx, ny, 2) or (nx, ny, nz, 3), followed by out_channels neighbor sums.
         """
         halo = 2
         field = field.astype(self.precision_policy.compute_dtype)
@@ -1345,7 +1347,22 @@ class Multiphase(LBMBase):
                     continue
                 term = value * weight
                 gradient[axis] = term if gradient[axis] is None else gradient[axis] + term
-        return jnp.concatenate(gradient, axis=-1)
+        if weights is None:
+            return jnp.concatenate(gradient, axis=-1)
+
+        sums = [None] * weights.shape[0]
+        for q_index, direction in enumerate(np.asarray(self.lattice.c).T):
+            column = weights[:, q_index]
+            if np.all(column == 0.0):
+                continue
+            value = padded[tuple(slice(halo - int(c), halo - int(c) + n) for c, n in zip(direction[: self.dim], spatial, strict=True))]
+            for channel, w in enumerate(column):
+                if w == 0.0:
+                    continue
+                term = value * float(w)
+                sums[channel] = term if sums[channel] is None else sums[channel] + term
+        sums = [t if t is not None else jnp.zeros_like(field) for t in sums]
+        return jnp.concatenate(gradient + sums, axis=-1)
 
     def _create_boundary_data(self):
         """
@@ -2326,7 +2343,10 @@ class Multiphase(LBMBase):
         (scalar_gradient is a shard_map'd call and must not be invoked from inside vmap).
         """
         gradient_tree = [self.scalar_gradient(psi) if used else None for psi, used in zip(psi_tree, self._psi_stencil_components, strict=True)]
+        return self._fluid_fluid_force_from_gradients(psi_tree, gradient_tree)
 
+    def _fluid_fluid_force_from_gradients(self, psi_tree, gradient_tree):
+        """F_k = -psi_k * sum_k' g_kk' * grad(psi_k') from precomputed gradients."""
         force_tree = []
         for output in range(self.n_components):
             terms = [
@@ -2829,9 +2849,9 @@ class MultiphaseBGK(Multiphase):
 class MultiphaseMRT(Multiphase):
     """Multiphase MRT solver with fused sparse collision kernels.
 
-    The optimized kernel is used for the default equilibrium and force model when
-    ``kappa`` is zero and wetting is absent or uses improved virtual density.
-    Other configurations use the general fused MRT kernel.
+    The optimized kernel is used for the default equilibrium and force model (with or
+    without the kappa surface-tension term on D2Q9/D3Q19) when wetting is absent or uses
+    improved virtual density. Other configurations use the general fused MRT kernel.
     """
 
     def __init__(self, **kwargs):
@@ -2932,10 +2952,11 @@ class MultiphaseMRT(Multiphase):
         self._uses_fast_mrt_collision = (
             self._uses_default_mrt_equilibrium
             and self._uses_default_compute_force
-            and not self._has_surface_tension
+            and (not self._has_surface_tension or isinstance(self.lattice, (LatticeD2Q9, LatticeD3Q19)))
             and self.wetting_formulation in (None, "improved_virtual_density")
         )
         self.scalar_surface_stencil = None
+        self.scalar_gradient_surface = None
         self.surface_moment_center = None
         if self._has_surface_tension and isinstance(self.lattice, (LatticeD2Q9, LatticeD3Q19)):
             moment_pairs = ((0, 0), (0, 1), (1, 1)) if self.dim == 2 else ((0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2))
@@ -2953,6 +2974,31 @@ class MultiphaseMRT(Multiphase):
                 )
             )
             self.surface_moment_center = jnp.asarray(np.sum(surface_weights, axis=1), dtype=self.precision_policy.compute_dtype)
+            # Gradient and surface moments of psi from one padded array (one halo exchange, one pass over psi).
+            self.scalar_gradient_surface = jit(
+                shard_map(
+                    partial(self._gradient_stencil_m, weights=surface_weights),
+                    mesh=self.mesh,
+                    in_specs=scalar_spec,
+                    out_specs=scalar_spec,
+                    check_vma=False,
+                )
+            )
+        # Population-space coefficients of the surface source, (C @ M_inv)_i = sum_k C_k M_inv[k, i], restricted to the moments
+        # C can populate, so the fast collision adds it per direction without a dense q x q product.
+        surface_moments = (1, 2, 7, 8) if self.dim == 2 else (1, 9, 11, 13, 14, 15)
+        self._surface_population_terms = []
+        for M_inv, has_surface_tension in zip(self.M_inv, self._surface_tension_components, strict=True):
+            if not has_surface_tension:
+                self._surface_population_terms.append(None)
+                continue
+            matrix = np.asarray(M_inv)
+            self._surface_population_terms.append(
+                tuple(
+                    tuple((k, coefficient_dtype(matrix[k, i])) for k in surface_moments if not np.isclose(matrix[k, i], 0.0, atol=1e-7))
+                    for i in range(self.lattice.q)
+                )
+            )
 
     @property
     def omega(self):
@@ -2996,37 +3042,55 @@ class MultiphaseMRT(Multiphase):
             raise NotImplementedError("MRT model with D3Q27 model has not been implemented")
 
         C_tree = []
+        for psi, moments in zip(psi_tree, self._surface_source_moments(psi_tree), strict=True):
+            C = jnp.zeros((*psi.shape[:-1], self.q), dtype=self.precision_policy.compute_dtype)
+            if moments is not None:
+                for index, value in moments.items():
+                    C = C.at[..., index].set(value)
+            C_tree.append(C)
+        return C_tree
+
+    def _surface_source_moments(self, psi_tree, psi_moments_tree=None):
+        """
+        Nonzero moment-space entries of the surface-tension source term C, per component.
+
+        Returns
+        -------
+        list of (dict of int -> jax.numpy.ndarray) or None
+            For each component, {moment index: field of shape (...)} or None when that component's kappa is zero.
+
+        psi_moments_tree (list of jax.numpy.ndarray, optional): scalar_surface_stencil(psi) per component, if already
+            computed (e.g. fused with the gradient by scalar_gradient_surface).
+        """
+        out = []
         g_diagonal = self._g_host.diagonal().tolist()
         for component, (kappa, g, s_v, s_e, s_eta, psi) in enumerate(
             zip(self.kappa, g_diagonal, self.s_v, self.s_e, self.s_eta, psi_tree, strict=True)
         ):
             if not self._surface_tension_components[component]:
-                C_tree.append(jnp.zeros((*psi.shape[:-1], self.q), dtype=self.precision_policy.compute_dtype))
+                out.append(None)
                 continue
 
-            psi_moments = self.scalar_surface_stencil(psi)
+            psi_moments = self.scalar_surface_stencil(psi) if psi_moments_tree is None else psi_moments_tree[component]
             centered_psi = psi_moments - psi * self.surface_moment_center
             # Q = kappa * (G / 2) * psi * sum_i w_i (psi(x + e_i) - psi(x)) e_i e_i (Li & Luo 2013), so sigma ~ (1 - kappa).
             qmoments = (0.5 * g * kappa) * psi * centered_psi
-            C = jnp.zeros((*psi.shape[:-1], self.q), dtype=self.precision_policy.compute_dtype)
             if self.dim == 2:
                 qxx, qxy, qyy = (qmoments[..., index] for index in range(3))
-                C = C.at[..., 1].set(1.5 * s_e * (qxx + qyy))
-                C = C.at[..., 2].set(-1.5 * s_eta * (qxx + qyy))
-                C = C.at[..., 7].set(-s_v * (qxx - qyy))
-                C = C.at[..., 8].set(-s_v * qxy)
+                out.append({1: 1.5 * s_e * (qxx + qyy), 2: -1.5 * s_eta * (qxx + qyy), 7: -s_v * (qxx - qyy), 8: -s_v * qxy})
             else:
                 qxx, qxy, qxz, qyy, qyz, qzz = (qmoments[..., index] for index in range(6))
                 # e = 19|c|^2 - 30: keeping the normal pressure fixed while the tangential part changes by -kappa needs
                 # delta(tr Pi) = (4/5) tr Q, i.e. (76/5) s_e tr Q (Yang & Qin 2024, Eq. 25).
-                C = C.at[..., 1].set((76.0 / 5.0) * s_e * (qxx + qyy + qzz))
-                C = C.at[..., 9].set(-s_v * (2.0 * qxx - qyy - qzz))
-                C = C.at[..., 11].set(-s_v * (qyy - qzz))
-                C = C.at[..., 13].set(-s_v * qxy)
-                C = C.at[..., 14].set(-s_v * qyz)
-                C = C.at[..., 15].set(-s_v * qxz)
-            C_tree.append(C)
-        return C_tree
+                out.append({
+                    1: (76.0 / 5.0) * s_e * (qxx + qyy + qzz),
+                    9: -s_v * (2.0 * qxx - qyy - qzz),
+                    11: -s_v * (qyy - qzz),
+                    13: -s_v * qxy,
+                    14: -s_v * qyz,
+                    15: -s_v * qxz,
+                })
+        return out
 
     @partial(jit, static_argnums=(0,), inline=True)
     def _force_delta_feq(self, rho_tree, u_tree, F_tree):
@@ -3101,13 +3165,31 @@ class MultiphaseMRT(Multiphase):
 
     @partial(jit, static_argnums=(0,))
     def _collision_fast(self, fin_tree, T=None):
-        """Run the zero-kappa default MRT kernel, with optional virtual-density wetting."""
+        """Run the default MRT kernel, with optional surface-tension adjustment and virtual-density wetting."""
         fin_tree = tree_map(self.precision_policy.cast_to_compute, fin_tree)
         rho_tree, u_tree = self.update_macroscopic(fin_tree)
 
         force_rho_tree = self.apply_contact_angle(rho_tree)
         psi_tree = self.compute_potential(force_rho_tree, T=T)
-        F_tree = self.compute_fluid_fluid_force(psi_tree)
+        uses_wetting = self.wetting_formulation is not None and any(self._has_wetting_bc)
+        surface_tree = [None] * self.n_components
+        if self._has_surface_tension and not uses_wetting and type(self).compute_fluid_fluid_force is Multiphase.compute_fluid_fluid_force:
+            gradient_tree, moments_tree = [], []
+            for psi, used, has_surface_tension in zip(psi_tree, self._psi_stencil_components, self._surface_tension_components, strict=True):
+                if has_surface_tension:
+                    stencil = self.scalar_gradient_surface(psi)
+                    gradient_tree.append(stencil[..., : self.dim])
+                    moments_tree.append(stencil[..., self.dim :])
+                else:
+                    gradient_tree.append(self.scalar_gradient(psi) if used else None)
+                    moments_tree.append(None)
+            F_tree = self._fluid_fluid_force_from_gradients(psi_tree, gradient_tree)
+            surface_tree = self._surface_source_moments(psi_tree, moments_tree)
+        else:
+            F_tree = self.compute_fluid_fluid_force(psi_tree)
+            if self._has_surface_tension:
+                # Same potential as the general path: the contact-angle-adjusted one unless wetting is active.
+                surface_tree = self._surface_source_moments(self.compute_potential(rho_tree, T=T) if uses_wetting else psi_tree)
         if self.body_force is not None:
             F_tree = tree_map(lambda force, rho: force + self.body_force * rho, F_tree, force_rho_tree)
 
@@ -3137,12 +3219,17 @@ class MultiphaseMRT(Multiphase):
         )
 
         fout_tree = []
-        for f, feq, delta_feq, columns in zip(fin_tree, feq_tree, delta_feq_tree, self.collision_terms, strict=True):
+        for f, feq, delta_feq, columns, moments, surface_terms in zip(
+            fin_tree, feq_tree, delta_feq_tree, self.collision_terms, surface_tree, self._surface_population_terms, strict=True
+        ):
             difference = f - feq
             outputs = []
             for output_direction, terms in enumerate(columns):
                 relaxed = sum(difference[..., input_direction] * coefficient for input_direction, coefficient in terms)
-                outputs.append(f[..., output_direction] - relaxed + delta_feq[..., output_direction])
+                value = f[..., output_direction] - relaxed + delta_feq[..., output_direction]
+                if moments is not None:
+                    value = value + sum(moments[k] * coefficient for k, coefficient in surface_terms[output_direction])
+                outputs.append(value)
             fout_tree.append(jnp.stack(outputs, axis=-1))
 
         rho_out_tree = tree_map(lambda fout: jnp.sum(fout, axis=-1, keepdims=True), fout_tree)
@@ -3153,9 +3240,9 @@ class MultiphaseMRT(Multiphase):
         """Apply the MRT collision and exact-difference force.
 
         Uses the optimized kernel for the default equilibrium and force model with
-        zero ``kappa`` and either no wetting or improved virtual-density wetting;
-        otherwise uses the general kernel. Both fuse relaxation as
-        ``f - (f - feq) @ (M @ S @ M_inv) + delta_feq``.
+        either no wetting or improved virtual-density wetting; otherwise uses the
+        general kernel. Both fuse relaxation as
+        ``f - (f - feq) @ (M @ S @ M_inv) + delta_feq + C @ M_inv``.
         """
         if self._uses_fast_mrt_collision:
             return self._collision_fast(fin_tree, T=T)

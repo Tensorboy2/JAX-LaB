@@ -35,13 +35,6 @@ A Python-based, differentiable, massively parallel lattice Boltzmann library for
    </td>
   </tr>
 </table>
-<div align="center">
-  <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/predicted.png" alt="" width="98.5%">
-</div>
-
-<div align="center">
-  Temporal evolution of the density field determined using neural network for the inverse multiphase flow control problem of forming a droplet at t = 900. The MLP output is used as the initial condition for LBM and the backpropagation step during training leverages the auto-differentiation capabilities of JAX-LaB (see <a href="https://doi.org/10.1029/2025MS005313">paper</a> for details).
-</div>
 
 ## Key Features
 - **JAX Ecosystem Integration:** Works with machine learning libraries such as [Equinox](https://github.com/patrick-kidger/equinox), [Flax](https://github.com/google/flax), [Haiku](https://github.com/deepmind/dm-haiku), and [Optax](https://github.com/google-deepmind/optax).
@@ -56,7 +49,7 @@ A Python-based, differentiable, massively parallel lattice Boltzmann library for
 ## Capabilities
 ### Multiphase Flow Modeling
 **Shan-Chen** pseudopotential method with various modifications:
-- Support for **high density ratio flows** (tested for density ratios > 10<sup>8</sup>) using improved forcing scheme.
+- Support for **high density ratio flows** (tested for density ratios > 10<sup>10</sup>) using 4th-order isotropic explicit finite difference (EFM) method for gradient computation.
 - Incorporates **Equation of State (EOS)** to model multiphase flows. Currently implemented EOS include **Carnahan-Starling**, **Peng-Robinson**, **Redlich-Kwong**, **Redlich-Kwong-Soave**
 and **VanderWaals**.
 - **Density ratio independent surface tension** control by directly modifying pressure tensor (MRT model).
