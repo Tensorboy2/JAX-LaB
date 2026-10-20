@@ -65,8 +65,7 @@ class Droplet3D(MultiphaseBGK):
     @partial(jit, static_argnums=(0,))
     def compute_potential(self, rho_tree):
         psi_tree = tree_map(lambda rho: jnp.exp(-1 / rho), rho_tree)
-        U_tree = tree_map(lambda rho: jnp.zeros_like(rho), rho_tree)
-        return psi_tree, U_tree
+        return psi_tree
 
     @partial(jit, static_argnums=(0,))
     def compute_pressure(self, rho_tree, psi_tree):
@@ -103,8 +102,7 @@ if __name__ == "__main__":
             "g_kkprime": -1.0 * np.ones((1, 1)),
             # "EOS": eos,
             "body_force": [0.0, 0.0, 0.0],
-            "k": [0.27],
-            "A": 0.0 * np.ones((1, 1)),
+            "lambda_": [0.27**0.5],  # k = lambda_**2 = 0.27
             # "s_rho": s_rho,
             # "s_e": s_e,
             # "s_eta": s_eta,

@@ -54,8 +54,7 @@ class Poiseuille2D(MultiphaseCascade):
     @partial(jit, static_argnums=(0,))
     def compute_potential(self, rho_tree):
         psi_tree = tree_map(lambda rho: jnp.exp(-1 / rho), rho_tree)
-        U_tree = tree_map(lambda rho: jnp.zeros_like(rho), rho_tree)
-        return psi_tree, U_tree
+        return psi_tree
 
     @partial(jit, static_argnums=(0,))
     def compute_pressure(self, rho_tree, psi_tree):
@@ -126,8 +125,7 @@ if __name__ == "__main__":
         "nz": 0,
         "g_kkprime": np.zeros((1, 1)),
         "body_force": [1e-6, 0.0],
-        "k": [0.0],
-        "A": np.zeros((1, 1)),
+        "lambda_": [0.0],
         "M": [M],
         "s_0": s_0,
         "s_1": s_1,

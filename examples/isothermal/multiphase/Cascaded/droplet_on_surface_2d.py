@@ -62,14 +62,13 @@ class DropletOnWall2D(MultiphaseCascade):
         )
         psi_tree[1] = rho_tree[1]
         # Zhang-Chen potential
-        U_tree = tree_map(lambda rho: jnp.zeros_like(rho), rho_tree)
-        return psi_tree, U_tree
+        return psi_tree
 
     @partial(jit, static_argnums=(0, 2))
     def compute_force(self, rho_tree, inter_component_interaction=True):
         rho_tree = self.apply_contact_angle(rho_tree)
-        psi_tree, U_tree = self.compute_potential(rho_tree)
-        fluid_fluid_force = self.compute_fluid_fluid_force(psi_tree, U_tree)
+        psi_tree = self.compute_potential(rho_tree)
+        fluid_fluid_force = self.compute_fluid_fluid_force(psi_tree)
         if inter_component_interaction:
             F_1 = (
                 -g_AB
@@ -118,7 +117,7 @@ class DropletOnWall2D(MultiphaseCascade):
     def apply_force(self, Tdash_tree, rho_tree, u_tree):
         F_tree = self.compute_force(rho_tree)
         F_intra_tree = self.compute_force(rho_tree, inter_component_interaction=False)
-        psi_tree, _ = self.compute_potential(rho_tree)
+        psi_tree = self.compute_potential(rho_tree)
         C_tree = self.compute_force_central_moments(F_tree, F_intra_tree, psi_tree)
         Tf_tree = tree_map(lambda S, C: jnp.dot(C, jnp.eye(self.lattice.q) - 0.5 * S), self.S, C_tree)
         return tree_map(lambda Tdash, Tf: Tdash + Tf, Tdash_tree, Tf_tree)
@@ -257,8 +256,7 @@ if __name__ == "__main__":
         "g_kkprime": g_kkprime,
         "body_force": [0.0, 0.0],
         "EOS": eos,
-        "k": [1.0, 1.0],
-        "A": np.zeros((2, 2)),
+        "lambda_": [1.0, 1.0],
         "M": [M, M],
         "s_0": s_0,
         "s_1": s_1,

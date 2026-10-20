@@ -138,8 +138,7 @@ def test_multiphase_bgk_checkpoint_restart(tmp_path):
         "n_components": 2,
         "omega": [1.0, 1.0],
         "g_kkprime": np.zeros((2, 2)),
-        "k": [0.0, 0.0],
-        "A": np.zeros((2, 2)),
+        "lambda_": [0.0, 0.0],
     }
     restarted_output = _run_with_checkpoint_restart(SinusoidalMultiphaseBGK, parameters)
 

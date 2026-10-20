@@ -1,4 +1,4 @@
-"""Verify multiphase force stencils against periodic NumPy references."""
+"""Verify the EFM multiphase force stencil against periodic NumPy references."""
 
 import numpy as np
 
@@ -12,30 +12,22 @@ PRECISION = "f32/f32"
 SEED = 0
 
 
-def _reference_force_stencil(field, weights, dim):
-    """Compute the weighted directional neighbor sum with periodic rolls."""
+def _reference_efm_gradient(field, c, w, dim):
+    """Fourth-order isotropic EFM gradient: sum_i 3 w_i c_i (4/3 f(x + c_i) - 1/6 f(x + 2 c_i)), periodic rolls."""
     total = np.zeros((*field.shape[:-1], dim))
-    for direction, w in zip(*weights):
-        if np.all(w == 0.0):
+    for direction, weight in zip(c.T, w, strict=True):
+        if not np.any(direction):
             continue
-        shifted = np.roll(field[..., 0], direction, axis=tuple(range(dim)))
-        total += shifted[..., None] * w
+        near = np.roll(field[..., 0], tuple(-direction), axis=tuple(range(dim)))
+        far = np.roll(field[..., 0], tuple(-2 * direction), axis=tuple(range(dim)))
+        total += 3.0 * weight * ((4.0 / 3.0) * near - (1.0 / 6.0) * far)[..., None] * direction
     return total
 
 
-def _reference_compute_fluid_fluid_force(psi_arrays, U_arrays, A, g_kkprime, G_ff, c, dim):
-    directions = c.T  # (q, dim)
-    weights = (directions, G_ff[:, None] * c.T)  # paired for _reference_force_stencil's zip
-    psi_stencil = [_reference_force_stencil(psi, weights, dim) for psi in psi_arrays]
-    U_stencil = [_reference_force_stencil(U, weights, dim) for U in U_arrays]
-
+def _reference_compute_fluid_fluid_force(psi_arrays, g_kkprime, c, w, dim):
+    gradients = [_reference_efm_gradient(psi, c, w, dim) for psi in psi_arrays]
     n = len(psi_arrays)
-    forces = []
-    for k in range(n):
-        ffk_1 = sum((1 - A[k, j]) * g_kkprime[k, j] * psi_stencil[j] for j in range(n))
-        ffk_2 = sum(A[k, j] * U_stencil[j] for j in range(n))
-        forces.append(psi_arrays[k] * ffk_1 + ffk_2)
-    return forces
+    return [-psi_arrays[k] * sum(g_kkprime[k, j] * gradients[j] for j in range(n)) for k in range(n)]
 
 
 def _check(domain, lattice_class):
@@ -43,9 +35,6 @@ def _check(domain, lattice_class):
     nx, ny, nz = domain
     lattice = lattice_class(PRECISION)
 
-    rng = np.random.default_rng(SEED)
-    A = rng.uniform(0.0, 0.3, size=(2, 2))
-    A = (A + A.T) / 2  # A must combine with a symmetric-looking interaction; off-diagonal exercised either way
     g_kkprime = np.array([[-1.0, -0.5], [-0.5, -1.0]])
 
     kwargs = {
@@ -60,8 +49,7 @@ def _check(domain, lattice_class):
         "checkpoint_rate": 0,
         "n_components": 2,
         "g_kkprime": g_kkprime,
-        "k": [1.0, 1.0],
-        "A": A,
+        "lambda_": [1.0, 1.0],
         "EOS": VanderWaals(a=[9.0 / 49.0, 9.0 / 49.0], b=[2.0 / 21.0, 2.0 / 21.0], R=[1.0, 1.0], T=0.8 * 0.5714285714),
     }
     sim = MultiphaseBGK(**kwargs)
@@ -69,15 +57,13 @@ def _check(domain, lattice_class):
     spatial_shape = domain[:2] if dim == 2 else domain
     rng = np.random.default_rng(SEED + 1)
     psi_host = [rng.uniform(0.1, 1.0, size=(*spatial_shape, 1)).astype(np.float32) for _ in range(2)]
-    U_host = [rng.uniform(-0.1, 0.1, size=(*spatial_shape, 1)).astype(np.float32) for _ in range(2)]
     psi_tree = [sim.distributed_array_init(p.shape, sim.precision_policy.compute_dtype, init_val=p) for p in psi_host]
-    U_tree = [sim.distributed_array_init(u.shape, sim.precision_policy.compute_dtype, init_val=u) for u in U_host]
 
-    actual = [np.asarray(f) for f in sim.compute_fluid_fluid_force(psi_tree, U_tree)]
+    actual = [np.asarray(f) for f in sim.compute_fluid_fluid_force(psi_tree)]
 
     c = np.asarray(lattice.c)
-    G_ff = np.asarray(sim.G_ff)
-    expected = _reference_compute_fluid_fluid_force(psi_host, U_host, A, g_kkprime, G_ff, c, dim)
+    w = np.asarray(lattice.w, dtype=np.float64)
+    expected = _reference_compute_fluid_fluid_force(psi_host, g_kkprime, c, w, dim)
 
     for a, e in zip(actual, expected, strict=True):
         assert np.max(np.abs(a - e)) < 1e-5

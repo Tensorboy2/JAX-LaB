@@ -99,8 +99,7 @@ def test_local_exact_extrapolation_supports_multiple_components():
         checkpoint_rate=0,
         n_components=2,
         g_kkprime=np.array([[-1.0, -0.2], [-0.2, -1.0]]),
-        k=[1.0, 1.0],
-        A=np.zeros((2, 2)),
+        lambda_=[1.0, 1.0],
         EOS=VanderWaals(a=[9.0 / 49.0] * 2, b=[2.0 / 21.0] * 2, R=[1.0, 1.0], T=0.8 * 0.5714285714),
     )
     fin_tree = sim.assign_fields_sharded()

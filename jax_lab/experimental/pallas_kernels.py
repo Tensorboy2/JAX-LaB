@@ -713,7 +713,7 @@ def build_fused_soa_mrt_step(
         m_inv = tuple(tuple(float(value) for value in row) for row in np.asarray(_surface_tension["m_inv"]))
         surface_config = {
             "kappa": float(_surface_tension["kappa"]),
-            "A": float(_surface_tension["A"]),
+            "g_diag": float(_surface_tension["g_diag"]),
             "s_e": float(_surface_tension["s_e"]),
             "s_eta": float(_surface_tension["s_eta"]),
             "s_v": float(_surface_tension["s_v"]),
@@ -778,7 +778,6 @@ def build_fused_soa_mrt_step(
                 center_coordinates[0] = center_coordinates[0] + 1
             psi = pltriton.load(surface_psi_ref.at[(*center_coordinates, 0)], mask=active, other=0.0).astype(compute_dtype)
             psi_moments = [jnp.zeros_like(psi) for _ in surface_config["weights"]]
-            psi_squared_moments = [jnp.zeros_like(psi) for _ in surface_config["weights"]]
             for q_index, velocity in enumerate(velocities):
                 source_coordinates = []
                 for axis, (coordinate, component, size) in enumerate(zip(coordinates, velocity, domain_shape, strict=True)):
@@ -787,30 +786,15 @@ def build_fused_soa_mrt_step(
                     else:
                         source_coordinates.append((coordinate - component) % size)
                 neighbor = pltriton.load(surface_psi_ref.at[(*source_coordinates, 0)], mask=active, other=0.0).astype(compute_dtype)
-                neighbor_squared = neighbor * neighbor
                 for moment_index, weights_row in enumerate(surface_config["weights"]):
                     weight = weights_row[q_index]
                     if weight != 0.0:
                         psi_moments[moment_index] = psi_moments[moment_index] + weight * neighbor
-                        psi_squared_moments[moment_index] = psi_squared_moments[moment_index] + weight * neighbor_squared
 
-            qmoments = []
-            psi_squared = psi * psi
-            for psi_moment, psi_squared_moment, center_weight in zip(
-                psi_moments,
-                psi_squared_moments,
-                surface_config["centers"],
-                strict=True,
-            ):
-                centered_psi = psi_moment - psi * center_weight
-                centered_psi_squared = psi_squared_moment - psi_squared * center_weight
-                qmoments.append(
-                    -surface_config["kappa"]
-                    * (
-                        (1.0 - surface_config["A"]) * psi * centered_psi
-                        + 0.5 * surface_config["A"] * centered_psi_squared
-                    )
-                )
+            qmoments = [
+                (0.5 * surface_config["g_diag"] * surface_config["kappa"]) * psi * (psi_moment - psi * center_weight)
+                for psi_moment, center_weight in zip(psi_moments, surface_config["centers"], strict=True)
+            ]
 
             moments = [jnp.zeros_like(psi) for _ in range(lattice.q)]
             if lattice.d == 2:
@@ -821,7 +805,7 @@ def build_fused_soa_mrt_step(
                 moments[8] = -surface_config["s_v"] * qxy
             else:
                 qxx, qxy, qxz, qyy, qyz, qzz = qmoments
-                moments[1] = (2.0 / 5.0) * surface_config["s_e"] * (qxx + qyy + qzz)
+                moments[1] = (76.0 / 5.0) * surface_config["s_e"] * (qxx + qyy + qzz)
                 moments[9] = -surface_config["s_v"] * (2.0 * qxx - qyy - qzz)
                 moments[11] = -surface_config["s_v"] * (qyy - qzz)
                 moments[13] = -surface_config["s_v"] * qxy
@@ -989,7 +973,7 @@ def build_fused_soa_mrt_surface_tension_step(
     collision_terms,
     *,
     kappa: float,
-    A: float,
+    g_diag: float,
     s_e: float,
     s_eta: float,
     s_v: float,
@@ -1022,7 +1006,7 @@ def build_fused_soa_mrt_surface_tension_step(
         use_solid_mask=use_solid_mask,
         _surface_tension={
             "kappa": kappa,
-            "A": A,
+            "g_diag": g_diag,
             "s_e": s_e,
             "s_eta": s_eta,
             "s_v": s_v,

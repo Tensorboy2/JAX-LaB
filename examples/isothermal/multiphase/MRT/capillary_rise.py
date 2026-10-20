@@ -247,8 +247,7 @@ if __name__ == "__main__":
             "nz": 0,
             "body_force": [0.0, 0.0],
             "g_kkprime": -1 * np.ones((1, 1)),
-            "k": [0.15],
-            "A": -0.115 * np.ones((1, 1)),
+            "lambda_": [0.15**0.5],  # k = lambda_**2 = 0.15
             "M": [M],
             "s_rho": s_rho,
             "s_e": s_e,
@@ -256,7 +255,7 @@ if __name__ == "__main__":
             "s_j": s_j,
             "s_q": s_q,
             "s_v": s_v,
-            "kappa": [0.5],
+            "kappa": [1.0],  # = old kappa 0.5 under the papers' convention (sigma ~ 1 - kappa): zero surface tension, retune
             "precision": precision,
             "EOS": eos,
             "io_rate": 60000,
@@ -286,8 +285,7 @@ if __name__ == "__main__":
             "nz": 0,
             "body_force": [0.0, 0.0],
             "g_kkprime": -1 * np.ones((1, 1)),
-            "k": [0.15],
-            "A": -0.115 * np.ones((1, 1)),
+            "lambda_": [0.15**0.5],  # k = lambda_**2 = 0.15
             "M": [M],
             "s_rho": s_rho,
             "s_e": s_e,
@@ -295,7 +293,7 @@ if __name__ == "__main__":
             "s_j": s_j,
             "s_q": s_q,
             "s_v": s_v,
-            "kappa": [0.5],
+            "kappa": [1.0],  # = old kappa 0.5 under the papers' convention (sigma ~ 1 - kappa): zero surface tension, retune
             "wetting_formulation": "improved_virtual_density",
             "precision": precision,
             "io_rate": 40000,
@@ -324,8 +322,7 @@ if __name__ == "__main__":
         "nz": 0,
         "body_force": [0.0, 0.0],
         "g_kkprime": -1 * np.ones((1, 1)),
-        "k": [0.15],
-        "A": -0.115 * np.ones((1, 1)),
+        "lambda_": [0.15**0.5],  # k = lambda_**2 = 0.15
         "M": [M],
         "s_rho": s_rho,
         "s_e": s_e,
@@ -333,7 +330,7 @@ if __name__ == "__main__":
         "s_j": s_j,
         "s_q": s_q,
         "s_v": s_v,
-        "kappa": [0.5],
+        "kappa": [1.0],  # = old kappa 0.5 under the papers' convention (sigma ~ 1 - kappa): zero surface tension, retune
         "EOS": eos,
         "wetting_formulation": "improved_virtual_density",
         "precision": precision,

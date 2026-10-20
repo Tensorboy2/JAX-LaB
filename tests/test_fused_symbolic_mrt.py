@@ -62,8 +62,7 @@ def _build_sim(kappa):
         "n_components": 1,
         "omega": [1.0],
         "g_kkprime": -np.ones((1, 1)),
-        "k": [1.0],
-        "A": np.zeros((1, 1)),
+        "lambda_": [1.0],
         "body_force": [1e-5, -2e-5, 0.0],
         "EOS": VanderWaals(a=[9.0 / 49.0], b=[2.0 / 21.0], R=[1.0], T=0.8 * 0.5714285714),
         "M": [_mrt_matrix(lattice)],
@@ -96,7 +95,7 @@ def _reference_collision(sim, fin_tree, T=None):
     rho_tree, u_tree = sim.update_macroscopic(fin_tree)
     feq_tree = sim.equilibrium(rho_tree, u_tree, cast_output=False)
     delta_feq_tree = sim._compute_force_delta_feq(rho_tree, u_tree, T=T)
-    psi_tree, _ = sim.compute_potential(rho_tree, T=T)
+    psi_tree = sim.compute_potential(rho_tree, T=T)
     C_tree = sim.adjust_surface_tension(psi_tree)
 
     fout_tree = []
@@ -114,9 +113,8 @@ def _reference_surface_tension(sim, psi_tree):
     psi_s_tree = [sim.streaming(jnp.repeat(psi, axis=-1, repeats=sim.q)) for psi in psi_tree]
     c = jnp.transpose(sim.c)
     output = []
-    for kappa, A, s_v, s_e, psi, psi_s in zip(
+    for kappa, s_v, s_e, psi, psi_s in zip(
         sim.kappa,
-        sim.A.diagonal(),
         sim.s_v,
         sim.s_e,
         psi_tree,
@@ -124,10 +122,11 @@ def _reference_surface_tension(sim, psi_tree):
         strict=True,
     ):
         tm1 = lambda i, j: psi[..., 0] * jnp.dot(sim.G_ff * (psi_s - psi), c[:, i] * c[:, j])
-        tm2 = lambda i, j: jnp.dot(sim.G_ff * (psi_s**2 - psi**2), c[:, i] * c[:, j])
-        qxx = -kappa * ((1.0 - A) * tm1(0, 0) + 0.5 * A * tm2(0, 0))
-        qxy = -kappa * ((1.0 - A) * tm1(0, 1) + 0.5 * A * tm2(0, 1))
-        qyy = -kappa * ((1.0 - A) * tm1(1, 1) + 0.5 * A * tm2(1, 1))
+        # Li & Luo (2013): Q = kappa * (G / 2) * psi * sum_i w_i (psi_i - psi) e_i e_i
+        g = float(np.asarray(sim.g_kkprime)[len(output), len(output)])
+        qxx = 0.5 * g * kappa * tm1(0, 0)
+        qxy = 0.5 * g * kappa * tm1(0, 1)
+        qyy = 0.5 * g * kappa * tm1(1, 1)
         C = jnp.zeros_like(psi_s, dtype=sim.precision_policy.compute_dtype)
         if sim.dim == 2:
             C = C.at[..., 1].set(1.5 * s_e * (qxx + qyy))
@@ -135,10 +134,10 @@ def _reference_surface_tension(sim, psi_tree):
             C = C.at[..., 7].set(-s_v * (qxx - qyy))
             C = C.at[..., 8].set(-s_v * qxy)
         else:
-            qxz = -kappa * ((1.0 - A) * tm1(0, 2) + 0.5 * A * tm2(0, 2))
-            qyz = -kappa * ((1.0 - A) * tm1(1, 2) + 0.5 * A * tm2(1, 2))
-            qzz = -kappa * ((1.0 - A) * tm1(2, 2) + 0.5 * A * tm2(2, 2))
-            C = C.at[..., 1].set((2.0 / 5.0) * s_e * (qxx + qyy + qzz))
+            qxz = 0.5 * g * kappa * tm1(0, 2)
+            qyz = 0.5 * g * kappa * tm1(1, 2)
+            qzz = 0.5 * g * kappa * tm1(2, 2)
+            C = C.at[..., 1].set((76.0 / 5.0) * s_e * (qxx + qyy + qzz))
             C = C.at[..., 9].set(-s_v * (2.0 * qxx - qyy - qzz))
             C = C.at[..., 11].set(-s_v * (qyy - qzz))
             C = C.at[..., 13].set(-s_v * qxy)

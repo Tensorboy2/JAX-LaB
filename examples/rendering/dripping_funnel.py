@@ -132,18 +132,16 @@ class DrippingFunnelMRT(MultiphaseMRT):
 
         return tree_map(average_fluid_neighbors, rho_streamed_tree, self.solid_mask_streamed)
 
-    def compute_fluid_fluid_force(self, psi_tree, potential_tree):
-        """Compute the one-component interaction force using a nonperiodic z stencil."""
+    def compute_fluid_fluid_force(self, psi_tree):
+        """Compute the one-component EFM interaction force with periodic x/y and edge-replicated (nonperiodic) z."""
         psi = psi_tree[0]
-        potential = potential_tree[0]
-        psi_streamed = self._stream_nonperiodic_z(psi)
-        potential_streamed = self._stream_nonperiodic_z(potential)
-        directions = jnp.asarray(self.c, dtype=self.precision_policy.compute_dtype).T
-        force_weight = self.A[0, 0]
-        coupling = self.g_kkprime[0, 0]
-        shan_chen_force = jnp.dot((1.0 - force_weight) * coupling * self.G_ff * psi_streamed, directions)
-        zhang_chen_force = force_weight * jnp.dot(self.G_ff * potential_streamed, directions)
-        return [psi * shan_chen_force + zhang_chen_force]
+        padded = jnp.pad(psi, ((2, 2), (2, 2), (0, 0), (0, 0)), mode="wrap")
+        padded = jnp.pad(padded, ((0, 0), (0, 0), (2, 2), (0, 0)), mode="edge")
+        gradient = [0.0, 0.0, 0.0]
+        for offset, vector in self._efm_offsets:
+            value = padded[tuple(slice(2 + o, 2 + o + n) for o, n in zip(offset, psi.shape[:-1], strict=True))]
+            gradient = [g + weight * value for g, weight in zip(gradient, vector, strict=True)]
+        return [-float(self.g_kkprime[0, 0]) * psi * jnp.concatenate(gradient, axis=-1)]
 
     def set_boundary_conditions(self):
         radial_distance, z = self._radial_and_z_grid()
@@ -287,8 +285,7 @@ if __name__ == "__main__":
         g_kkprime=-np.ones((1, 1)),
         EOS=eos,
         precision=precision,
-        k=[0.27],
-        A=0.01 * np.ones((1, 1)),
+        lambda_=[0.27**0.5],  # k = lambda_**2 = 0.27
         s_rho=[0.0],
         s_e=[1.0],
         s_eta=[1.0],

@@ -62,8 +62,7 @@ class Droplet2D(MultiphaseMRT):
 
     @partial(jit, static_argnums=(0,))
     def compute_potential(self, rho_tree):
-        U_tree = tree_map(lambda rho: jnp.zeros_like(rho), rho_tree)
-        return rho_tree, U_tree
+        return rho_tree
 
     @partial(jit, static_argnums=(0,))
     def compute_pressure(self, rho_tree, psi_tree):
@@ -178,8 +177,7 @@ if __name__ == "__main__":
             "s_q": s_q,
             "s_v": s_v,
             "kappa": [0, 0],
-            "k": [0, 0],
-            "A": np.zeros((2, 2)),
+            "lambda_": [0.0, 0.0],
             "io_rate": 30000,
             "compute_MLUPS": False,
             "print_info_rate": 10000,

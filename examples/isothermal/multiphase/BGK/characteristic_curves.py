@@ -63,8 +63,7 @@ class Droplet3D(MultiphaseBGK):
     @partial(jit, static_argnums=(0,))
     def compute_potential(self, rho_tree):
         rho_tree = tree_map(lambda rho: self.precision_policy.cast_to_compute(rho), rho_tree)
-        U_tree = tree_map(lambda rho: jnp.zeros_like(rho), rho_tree)
-        return rho_tree, U_tree
+        return rho_tree
 
     @partial(jit, static_argnums=(0,))
     def compute_pressure(self, rho_tree, psi_tree=None):
@@ -169,8 +168,7 @@ class DropletOnWall3D(MultiphaseBGK):
     @partial(jit, static_argnums=(0,))
     def compute_potential(self, rho_tree):
         rho_tree = tree_map(lambda rho: self.precision_policy.cast_to_compute(rho), rho_tree)
-        U_tree = tree_map(lambda rho: jnp.zeros_like(rho), rho_tree)
-        return rho_tree, U_tree
+        return rho_tree
 
     @partial(jit, static_argnums=(0,))
     def compute_pressure(self, rho_tree, psi_tree=None):
@@ -262,8 +260,7 @@ class PorousMedia(MultiphaseBGK):
     @partial(jit, static_argnums=(0,))
     def compute_potential(self, rho_tree):
         rho_tree = tree_map(lambda rho: self.precision_policy.cast_to_compute(rho), rho_tree)
-        U_tree = tree_map(lambda rho: jnp.zeros_like(rho), rho_tree)
-        return rho_tree, U_tree
+        return rho_tree
 
     @partial(jit, static_argnums=(0,))
     def compute_pressure(self, rho_tree, psi_tree=None):
@@ -538,8 +535,6 @@ if __name__ == "__main__":
     rho_a_g = 0.1
     tau_a = 1.0
 
-    A = np.zeros((2, 2))
-
     subprocess.run("rm -rf output*/", shell=True, check=True)
     file = open("surface_tension.txt", "w")
     file.write("Radius, Pressure Difference\n")
@@ -555,8 +550,7 @@ if __name__ == "__main__":
             "g_kkprime": g_kkprime,
             "omega": [tau_w, tau_a],
             "precision": precision,
-            "k": [1.0, 1.0],
-            "A": A,
+            "lambda_": [1.0, 1.0],
             "io_rate": 20000,
             "compute_MLUPS": False,
             "print_info_rate": 20000,
@@ -596,8 +590,7 @@ if __name__ == "__main__":
         "omega": [1 / tau_w, 1 / tau_a],
         "wetting_formulation": "improved_virtual_density",
         "precision": precision,
-        "k": [1.0, 1.0],
-        "A": A,
+        "lambda_": [1.0, 1.0],
         "io_rate": 10000,
         "compute_MLUPS": False,
         "print_info_rate": 10000,
@@ -652,8 +645,7 @@ if __name__ == "__main__":
         "omega": [1.0, 1.0],
         "wetting_formulation": "improved_virtual_density",
         "precision": precision,
-        "k": [1.0, 1.0],
-        "A": np.zeros((2, 2)),
+        "lambda_": [1.0, 1.0],
         "io_rate": 1000,
         "print_info_rate": 1000,
         "compute_MLUPS": False,

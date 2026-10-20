@@ -96,8 +96,7 @@ class PorousMedia(MultiphaseBGK):
 
     @partial(jit, static_argnums=(0,))
     def compute_potential(self, rho_tree):
-        U_tree = tree_map(lambda rho: jnp.zeros_like(rho), rho_tree)
-        return rho_tree, U_tree
+        return rho_tree
 
     @partial(jit, static_argnums=(0,))
     def compute_pressure(self, rho_tree, psi_tree):
@@ -152,8 +151,7 @@ if __name__ == "__main__":
             "wetting_formulation": "improved_virtual_density",
             "precision": precision,
             "body_force": [0.0, 0.0, 0.0],
-            "k": [0],
-            "A": np.zeros((1, 1)),
+            "lambda_": [0.0],
             "io_rate": 1000,
             "compute_MLUPS": True,
             "print_info_rate": 1000,

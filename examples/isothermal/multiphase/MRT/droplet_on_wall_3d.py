@@ -162,8 +162,7 @@ if __name__ == "__main__":
         "EOS": eos,
         "kappa": [0],
         # values not used, can be set as anything
-        "k": [1.0],
-        "A": 0.0 * np.zeros((1, 1)),
+        "lambda_": [1.0],
         "precision": precision,
         "io_rate": 1000,
         "print_info_rate": 1000,

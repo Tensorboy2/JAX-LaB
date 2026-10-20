@@ -3,8 +3,8 @@ port plan (MultiphaseBGK first)" for the design and phased plan this implements.
 
 Populations stay direction-major (SoA, (q, *spatial)) throughout step() - collision,
 streaming, and boundary conditions - exactly like PallasBGK/PallasMRT, just as
-a per-component list instead of one array. compute_potential and the neighbor-stencil
-scalar_force_stencil are also Pallas-fused (see pallas_multiphase_kernels.py); collision
+a per-component list instead of one array. compute_potential and the EFM gradient
+scalar_gradient are also Pallas-fused (see pallas_multiphase_kernels.py); collision
 itself uses the mask-free mode of pallas_kernels.build_fused_soa_bgk_step(with_force=True),
 one call per component, because boundary handling stays in the general SoA pipeline.
 apply_contact_angle and compute_fluid_fluid_force's per-output-
@@ -46,7 +46,12 @@ from .pallas_kernels import (
     build_fused_soa_mrt_surface_tension_step,
     build_soa_streaming,
 )
-from .pallas_multiphase_kernels import build_fused_soa_neighbor_stencil_step, build_fused_soa_potential_step, eos_pressure_fn
+from .pallas_multiphase_kernels import (
+    build_fused_soa_gradient_step,
+    build_fused_soa_neighbor_stencil_step,
+    build_fused_soa_potential_step,
+    eos_pressure_fn,
+)
 from .soa_boundary_conditions import SoABoundaryConditions, supports_soa_boundaries
 
 logger = logging.getLogger(__name__)
@@ -146,56 +151,29 @@ class PallasMultiphaseBGK(MultiphaseBGK):
 
         rho_spec = PartitionSpec("x", *([None] * self.dim))
         g_diagonal = np.asarray(self.g_kkprime).diagonal()
-        surface_components = getattr(self, "_surface_tension_components", (False,) * self.n_components)
-        self._potential_needs_psi = tuple(
-            self._psi_stencil_components[component]
-            or any(self._psi_interactions[component])
-            or surface_components[component]
-            or not (any(self._psi_interactions[component]) or any(self._U_interactions[component]))
-            for component in range(self.n_components)
-        )
-        self._potential_needs_u = self._U_stencil_components
         self._pallas_potential = []
         for component in range(self.n_components):
-            needs_psi = self._potential_needs_psi[component]
-            needs_u = self._potential_needs_u[component]
-            if not needs_psi and not needs_u:
-                self._pallas_potential.append(None)
-                continue
             local_potential = build_fused_soa_potential_step(
                 self.lattice,
                 local_shape,
                 self.precision_policy,
                 eos_pressure_fn(self.eos, component),
-                float(self.k[component]),
+                float(self.lambda_[component]),
                 float(g_diagonal[component]),
                 block_size=self.pallas_block_size,
                 num_warps=self.pallas_num_warps,
                 allow_multi_device_local=True,
-                return_psi=needs_psi,
-                return_u=needs_u,
             )
             self._pallas_potential.append(
-                jax.jit(
-                    shard_map(
-                        local_potential,
-                        mesh=self.mesh,
-                        in_specs=rho_spec,
-                        out_specs=(rho_spec if needs_psi else None, rho_spec if needs_u else None),
-                        check_rep=False,
-                    )
-                )
+                jax.jit(shard_map(local_potential, mesh=self.mesh, in_specs=rho_spec, out_specs=rho_spec, check_rep=False))
             )
 
         x_needs_halo = self.n_devices > 1
 
         def build_stencil_callable(weights):
             """One shard_map-wrapped Pallas neighbor-stencil callable for a given
-            (out_channels, q) weight array - shared halo-wrapping logic for both the
-            vector-weighted force stencil and the scalar-weighted wetting/average-
-            density stencil below (same underlying _neighbor_stencil_m structure
-            base Multiphase itself shares between scalar_force_stencil and
-            scalar_neighbor_sum, just with different weights)."""
+            (out_channels, q) weight array, used for the scalar-weighted wetting/average-
+            density stencil below (base Multiphase's scalar_neighbor_sum)."""
             local_stencil = build_fused_soa_neighbor_stencil_step(
                 self.lattice,
                 local_shape,
@@ -216,11 +194,28 @@ class PallasMultiphaseBGK(MultiphaseBGK):
 
             return jax.jit(shard_map(stencil_body, mesh=self.mesh, in_specs=rho_spec, out_specs=rho_spec, check_rep=False))
 
-        # Overrides Multiphase.__init__'s own self.scalar_force_stencil (same calling
-        # convention: field -> weighted neighbor-direction sum), so compute_fluid_fluid_force
-        # (inherited, unchanged) transparently uses this Pallas version instead.
-        weights_vector = np.asarray(self.G_ff)[None, :] * np.asarray(self.c)
-        self.scalar_force_stencil = build_stencil_callable(weights_vector)
+        # Overrides Multiphase.__init__'s own self.scalar_gradient (same calling convention:
+        # field -> gradient), so compute_fluid_fluid_force (inherited, unchanged)
+        # transparently uses this Pallas version instead. Needs a two-layer X halo.
+        local_gradient = build_fused_soa_gradient_step(
+            self.lattice,
+            local_shape,
+            self.precision_policy,
+            self._efm_offsets,
+            halo=2,
+            block_size=self.pallas_block_size,
+            num_warps=self.pallas_num_warps,
+            allow_multi_device_local=True,
+        )
+
+        def gradient_body(local_field):
+            if x_needs_halo:
+                left_halo = self.send_right(local_field[-2:], "x")
+                right_halo = self.send_left(local_field[:2], "x")
+                return local_gradient(jnp.concatenate((left_halo, local_field, right_halo), axis=0), True)
+            return local_gradient(local_field, False)
+
+        self.scalar_gradient = jax.jit(shard_map(gradient_body, mesh=self.mesh, in_specs=rho_spec, out_specs=rho_spec, check_rep=False))
 
         # Same override for self.scalar_neighbor_sum, used by compute_average_density
         # (in turn the dominant cost of apply_contact_angle - confirmed by direct
@@ -242,7 +237,7 @@ class PallasMultiphaseBGK(MultiphaseBGK):
         ]
 
         # Streaming and BC application replace Multiphase's own self.streaming (an
-        # instance attribute, same override mechanism as scalar_force_stencil above) and
+        # instance attribute, same override mechanism as scalar_gradient above) and
         # this class's own apply_bc (see below) - both SoA-native, one per component
         # (streaming shares a single kernel, since domain shape doesn't vary by
         # component; boundary conditions get one SoABoundaryConditions per component,
@@ -384,23 +379,12 @@ class PallasMultiphaseBGK(MultiphaseBGK):
 
     @partial(jax.jit, static_argnums=(0,))
     def compute_potential(self, rho_tree, T=None):
-        """Per-component Shan-Chen/Zhang-Chen potential, fused into one Pallas kernel
-        call per component instead of one shared, separately-jitted call over the whole
-        pytree (see build_fused_soa_potential_step)."""
+        """Per-component effective mass, fused into one Pallas kernel call per component
+        instead of one shared, separately-jitted call over the whole pytree (see
+        build_fused_soa_potential_step)."""
         if T is not None:
             raise NotImplementedError("PallasMultiphaseBGK does not support thermal EOS coupling yet.")
-        psi_tree = []
-        u_tree = []
-        for component in range(self.n_components):
-            potential = self._pallas_potential[component]
-            if potential is None:
-                psi_tree.append(None)
-                u_tree.append(None)
-                continue
-            psi, u = potential(rho_tree[component])
-            psi_tree.append(psi)
-            u_tree.append(u)
-        return psi_tree, u_tree
+        return [potential(rho) for potential, rho in zip(self._pallas_potential, rho_tree, strict=True)]
 
     @partial(jax.jit, static_argnums=(0,))
     def collision(self, fin_tree, T=None):
@@ -411,7 +395,7 @@ class PallasMultiphaseBGK(MultiphaseBGK):
 
         Reuses apply_contact_angle and compute_fluid_fluid_force's per-output-component
         combine (compute_force -> apply_force's caller chain) unchanged - only
-        compute_potential and the neighbor-stencil scalar_force_stencil, the two
+        compute_potential and the EFM gradient scalar_gradient, the two
         dense-grid steps in that chain, are Pallas-fused (see __init__).
         """
         # Keep populations in storage dtype. The Pallas collision kernels cast each
@@ -426,7 +410,7 @@ class PallasMultiphaseBGK(MultiphaseBGK):
         rho_tree = self._compute_density(fin_tree)
         surface_components = getattr(self, "_surface_tension_components", (False,) * self.n_components)
         if any(surface_components):
-            force_tree, psi_tree, _ = self._compute_force_fields(rho_tree, T=T)
+            force_tree, psi_tree = self._compute_force_fields(rho_tree, T=T)
         else:
             force_tree = self.compute_force(rho_tree, T=T)
             psi_tree = (None,) * self.n_components
@@ -629,7 +613,7 @@ class PallasMultiphaseMRT(PallasMultiphaseBGK, MultiphaseMRT):
                         self.precision_policy,
                         self.collision_terms[component],
                         kappa=self.kappa[component],
-                        A=np.asarray(self.A)[component, component],
+                        g_diag=float(self._g_host[component, component]),
                         s_e=self.s_e[component],
                         s_eta=self.s_eta[component],
                         s_v=self.s_v[component],

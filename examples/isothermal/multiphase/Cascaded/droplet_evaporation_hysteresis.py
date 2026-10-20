@@ -71,7 +71,7 @@ class DropletEvaporationHysteresis(MultiphaseCascade):
         self.BCs[0].append(BounceBack(tuple(bottom.T), self.grid_info, self.precision_policy, theta_wall[tuple(bottom.T)]))
 
     @partial(jit, static_argnums=(0,))
-    def compute_fluid_fluid_force(self, psi_tree, U_tree):
+    def compute_fluid_fluid_force(self, psi_tree):
         c = jnp.array(self.c, dtype=self.precision_policy.compute_dtype).T
         psi_s_tree = tree_map(lambda psi: self.streaming(jnp.repeat(psi, axis=-1, repeats=self.q)), psi_tree)
 
@@ -85,14 +85,13 @@ class DropletEvaporationHysteresis(MultiphaseCascade):
         rho_tree = tree_map(lambda rho: self.precision_policy.cast_to_compute(rho), rho_tree)
         p_tree = self.compute_pressure(rho_tree)
         psi_tree = tree_map(lambda p, rho, G: jnp.sqrt(2 * (p - self.lattice.cs2 * rho) / G), p_tree, rho_tree, self.g_kkprime.diagonal().tolist())
-        U_tree = tree_map(lambda rho: jnp.zeros_like(rho), rho_tree)
-        return psi_tree, U_tree
+        return psi_tree
 
     @partial(jit, static_argnums=(0, 2))
     def compute_force(self, rho_tree, inter_component_interaction=True):
         rho_tree = self.apply_contact_angle(rho_tree)
-        psi_tree, U_tree = self.compute_potential(rho_tree)
-        force_tree = self.compute_fluid_fluid_force(psi_tree, U_tree)
+        psi_tree = self.compute_potential(rho_tree)
+        force_tree = self.compute_fluid_fluid_force(psi_tree)
         if self.body_force is not None:
             force_tree = tree_map(lambda force, rho: force + self.body_force * rho, force_tree, rho_tree)
         if self.wetting_formulation == "geometric":
@@ -129,7 +128,7 @@ class DropletEvaporationHysteresis(MultiphaseCascade):
     @partial(jit, static_argnums=(0,), inline=True)
     def apply_force(self, Tdash_tree, rho_tree, u_tree):
         F_tree = self.compute_force(rho_tree)
-        psi_tree, _ = self.compute_potential(rho_tree)
+        psi_tree = self.compute_potential(rho_tree)
         C_tree = self.compute_force_central_moments(F_tree, F_tree, psi_tree)
         Tf_tree = tree_map(lambda S, C: jnp.dot(C, jnp.eye(self.lattice.q) - 0.5 * S), self.S, C_tree)
         return tree_map(lambda Tdash, Tf: Tdash + Tf, Tdash_tree, Tf_tree)

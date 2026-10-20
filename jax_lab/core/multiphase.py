@@ -54,11 +54,15 @@ class Multiphase(LBMBase):
     The user supplies an equation of state (EOS). Pressure is evaluated from density and temperature before the effective mass. Both single-component
     multiphase and multicomponent multiphase systems are supported.
 
+    The interaction force is F_k = -psi_k * sum_k' g_kk' * grad(psi_k'), where the gradient is evaluated with a fourth-order
+    isotropic explicit finite difference (EFM) along every lattice direction (Refs. 3, 4), and the effective mass is evaluated in
+    the decoupled mesh space, psi = sqrt(2 * (lambda_^2 * p_EOS - cs2 * rho) / g_kk).
+
     Parameters
     ----------
-    k (list): Modification coefficient used to tune surface tension.
-
-    A (numpy.ndarray): Weighting factor for combining the Shan-Chen and Zhang-Chen forces.
+    lambda_ (float or list of float): Scale factor between the computational mesh step and the momentum-space lattice step
+        (one per component). Smaller values widen the interface (more nodes across it), improving stability at large density
+        ratios. Equivalent to the old modified-pressure coefficient through k = lambda_**2.
 
     g_kkprime (numpy.ndarray): Symmetric component-interaction matrix with shape (n_components, n_components).
 
@@ -79,6 +83,13 @@ class Multiphase(LBMBase):
     2. Yuan, Peng, and Laura Schaefer. “Equations of State in a Lattice Boltzmann Model.”
         Physics of Fluids 18, no. 4 (April 3, 2006): 042101. https://doi.org/10.1063/1.2187070.
 
+    3. Qin, Zhangrong, Jianfei Zhu, Wenbo Chen, Chengsheng Li, and Binghai Wen. "An effective pseudo-potential lattice Boltzmann
+        model with extremely large density ratio and adjustable surface tension." Physics of Fluids 34, 113328 (2022).
+        https://doi.org/10.1063/5.0123727.
+
+    4. Yang, Zhichao, and Zhangrong Qin. "A three-dimensional pseudo-potential multiphase model with super-large density ratio
+        and adjustable surface tension." Computers and Fluids 278, 106318 (2024). https://doi.org/10.1016/j.compfluid.2024.106318.
+
     Notes
     -----
     1. Boundary conditions are handled separately for each component. For example, define a wall condition once per component in a two-component system.
@@ -89,8 +100,9 @@ class Multiphase(LBMBase):
     def __init__(self, **kwargs):
         self.n_components = kwargs.get("n_components")
         super().__init__(**kwargs)
-        self.k = kwargs.get("k")
-        self.A = kwargs.get("A")
+        if "k" in kwargs or "A" in kwargs:
+            raise ValueError("'k' and 'A' were replaced by the single scale factor 'lambda_' (k = lambda_**2); the Zhang-Chen force term is removed.")
+        self.lambda_ = kwargs.get("lambda_")
         self.eos = kwargs.get("EOS", None)
         self.g_kkprime = kwargs.get("g_kkprime")  # Fluid-fluid interaction strength
         self.body_force = kwargs.get("body_force", None)
@@ -121,24 +133,18 @@ class Multiphase(LBMBase):
                 raise ValueError("geometric_preprocessing_batch_size must be positive.")
 
         self.G_ff = self.compute_ff_greens_function()
+        self._g_host = np.asarray(self.g_kkprime, dtype=np.float64)
         self.g_kkprime = jnp.array(self.g_kkprime, dtype=self.precision_policy.compute_dtype)
-        A_host = np.asarray(self.A)
-        g_host = np.asarray(self.g_kkprime)
         self._psi_interactions = tuple(
-            tuple((1.0 - A_host[output, source]) * g_host[output, source] != 0.0 for source in range(self.n_components))
-            for output in range(self.n_components)
-        )
-        self._U_interactions = tuple(
-            tuple(A_host[output, source] != 0.0 for source in range(self.n_components)) for output in range(self.n_components)
+            tuple(self._g_host[output, source] != 0.0 for source in range(self.n_components)) for output in range(self.n_components)
         )
         self._psi_stencil_components = tuple(
             any(self._psi_interactions[output][source] for output in range(self.n_components)) for source in range(self.n_components)
         )
-        self._U_stencil_components = tuple(
-            any(self._U_interactions[output][source] for output in range(self.n_components)) for source in range(self.n_components)
-        )
         self._uses_psi_force = any(self._psi_stencil_components)
-        self._uses_U_force = any(self._U_stencil_components)
+        self._efm_offsets = self._build_efm_gradient_offsets()
+        if self.nx // self.n_devices < 2:
+            raise ValueError("The fourth-order EFM gradient needs at least 2 x-planes per device (two-cell halo).")
 
         P = PartitionSpec
         scalar_spec = P("x", None, None) if self.dim == 2 else P("x", None, None, None)
@@ -167,9 +173,8 @@ class Multiphase(LBMBase):
             self.local_neq_bc_kernels = self._build_local_neq_bc_kernels(scalar_spec, variants, correction_weights)
         G_ff_host = np.array(self.G_ff)
         # scalar_neighbor_sum: G_ff-weighted scalar neighbor sum, used by the wetting/average-density
-        # denominator. scalar_force_stencil: the same neighbor structure, weighted by G_ff*c (a per-direction
-        # vector instead of a scalar), used by the Shan-Chen/Zhang-Chen fluid-fluid force - both share
-        # _neighbor_stencil_m's one-x-halo-exchange machinery, bound to their own static weights.
+        # denominator (one-x-halo _neighbor_stencil_m). scalar_gradient: fourth-order EFM gradient used by the
+        # fluid-fluid force (two-x-halo _gradient_stencil_m).
         self.scalar_neighbor_sum = (
             jit(
                 shard_map(
@@ -183,9 +188,9 @@ class Multiphase(LBMBase):
             if uses_improved_wetting
             else None
         )
-        self.scalar_force_stencil = jit(
+        self.scalar_gradient = jit(
             shard_map(
-                partial(self._neighbor_stencil_m, weights=G_ff_host[None, :] * np.array(self.c)),
+                self._gradient_stencil_m,
                 mesh=self.mesh,
                 in_specs=scalar_spec,
                 out_specs=scalar_spec,
@@ -240,34 +245,19 @@ class Multiphase(LBMBase):
         self._n_components = value
 
     @property
-    def k(self):
-        return self._k
+    def lambda_(self):
+        return self._lambda
 
-    @k.setter
-    def k(self, value):
+    @lambda_.setter
+    def lambda_(self, value):
         if value is None:
-            raise ValueError("Modification coefficient must be provided")
-        if isinstance(value, float) or isinstance(value, int):
-            if self.n_components != 1:
-                raise ValueError("The number of modification coefficients provided does not match the number of components in the system")
-            self._k = [value]
-        elif isinstance(value, list):
-            if len(value) != self.n_components:
-                raise ValueError("The number of modification coefficients provided does not match the number of components in the system")
-        self._k = value
-
-    @property
-    def A(self):
-        return self._A
-
-    @A.setter
-    def A(self, value):
-        if value is None:
-            raise ValueError("Weight coefficient value must be provided")
-        if isinstance(value, np.ndarray):
-            if value.shape != (self.n_components, self.n_components):
-                raise ValueError("The dimensions of A should match the number of components")
-        self._A = jnp.array(value, dtype=self.precision_policy.compute_dtype)
+            raise ValueError("Scale factor lambda_ must be provided")
+        values = [value] if isinstance(value, (int, float)) else value
+        if not isinstance(values, (list, tuple)) or len(values) != self.n_components:
+            raise ValueError("lambda_ must be a number (single component) or a list with one value per component")
+        if any(not isinstance(v, (int, float)) or v < 0 for v in values):
+            raise ValueError("lambda_ values must be non-negative numbers")
+        self._lambda = [float(v) for v in values]
 
     @property
     def body_force(self):
@@ -1256,11 +1246,9 @@ class Multiphase(LBMBase):
         jnp.roll for every axis and exactly one x-halo exchange per distinct x-shift shared by every lattice
         direction with that shift (-1, 0 or +1 for every lattice this library supports).
 
-        Reused for two purposes, bound to their own static weights via functools.partial when scalar_neighbor_sum
-        / scalar_force_stencil are built (see __init__): the G_ff-weighted neighbor sum used by
-        compute_average_density's wetting denominator (scalar weights), and the G_ff*c weighted directional sum
-        used by compute_fluid_fluid_force's Shan-Chen/Zhang-Chen force (vector weights) - both without ever
-        streaming a q-channel array.
+        Bound to static weights via functools.partial: the G_ff-weighted neighbor sum used by
+        compute_average_density's wetting denominator (scalar_neighbor_sum, scalar weights) and the MRT surface-tension
+        moments (scalar_surface_stencil, vector weights) - both without ever streaming a q-channel array.
 
         Parameters
         ----------
@@ -1298,31 +1286,66 @@ class Multiphase(LBMBase):
             total = total + base * jnp.asarray(w, dtype=self.precision_policy.compute_dtype)
         return total
 
-    def _surface_stencil_m(self, psi, weights):
-        """Compute first- and second-power scalar surface moments with one pair of x halo exchanges."""
-        psi = psi.astype(self.precision_policy.compute_dtype)
-        field = jnp.concatenate((psi, jnp.square(psi)), axis=-1)
-        x_shifted = {0: field}
-        for x_shift in (1, -1):
-            shifted = jnp.roll(field, x_shift, axis=0)
-            if x_shift == 1:
-                x_shifted[1] = shifted.at[:1].set(self.send_right(field[-1:], "x"))
-            else:
-                x_shifted[-1] = shifted.at[-1:].set(self.send_left(field[:1], "x"))
+    def _build_efm_gradient_offsets(self):
+        """
+        Collapse the fourth-order isotropic EFM gradient into static (offset, weight-vector) pairs.
 
-        directions = np.asarray(self.lattice.c).T
-        n_moments = weights.shape[0]
-        total = jnp.zeros((*psi.shape[:-1], 2, n_moments), dtype=self.precision_policy.compute_dtype)
-        for q_index, direction in enumerate(directions):
-            weight = weights[:, q_index]
-            if np.all(weight == 0.0):
+        Along each lattice direction c_i the directional derivative is (8 (f(x+c) - f(x-c)) - (f(x+2c) - f(x-2c))) / 12, and
+        grad f = (1/cs2) sum_i w_i c_i (c_i . grad f). Summing over both members of every +-c pair gives
+
+            grad f(x) = sum_i (w_i / cs2) c_i [ (4/3) f(x + c_i) - (1/6) f(x + 2 c_i) ],
+
+        which for D3Q19 reproduces Eqs. (21)-(23) of Yang & Qin (2024) term by term.
+
+        Returns
+        -------
+        tuple of (tuple of int, tuple of float)
+            Integer spatial offset and the gradient weight it contributes to each axis (zero entries kept).
+        """
+        c = np.asarray(self.lattice.c).T
+        w = np.asarray(self.lattice.w, dtype=np.float64)
+        weights = {}
+        for direction, weight in zip(c, w, strict=True):
+            if not np.any(direction):
                 continue
-            base = x_shifted[int(direction[0])]
-            remaining_axes = tuple(int(component) for component in direction[1 : self.dim])
-            if any(remaining_axes):
-                base = jnp.roll(base, remaining_axes, axis=tuple(range(1, self.dim)))
-            total = total + base[..., :, None] * jnp.asarray(weight, dtype=self.precision_policy.compute_dtype)
-        return total.reshape((*psi.shape[:-1], 2 * n_moments))
+            g = weight / self.lattice.cs2
+            for multiple, coefficient in ((1, 4.0 / 3.0), (2, -1.0 / 6.0)):
+                offset = tuple(int(multiple * component) for component in direction)
+                weights[offset] = weights.get(offset, np.zeros(self.dim)) + g * coefficient * direction
+        return tuple((offset, tuple(float(v) for v in vector)) for offset, vector in weights.items())
+
+    def _gradient_stencil_m(self, field):
+        """
+        Fourth-order isotropic EFM gradient of a scalar field (local shard).
+
+        The field is padded once (two-cell X halo exchanged between devices, periodic wrap in Y/Z) and every stencil
+        point is a static slice of that padded array, so XLA fuses the whole stencil into a single loop.
+
+        Parameters
+        ----------
+        field (jax.numpy.ndarray): Local shard of a scalar field, shape (nx, ny, 1) or (nx, ny, nz, 1).
+
+        Returns
+        -------
+        (jax.numpy.ndarray): Gradient, shape (nx, ny, 2) or (nx, ny, nz, 3).
+        """
+        halo = 2
+        field = field.astype(self.precision_policy.compute_dtype)
+        left = self.send_right(field[-halo:], "x")
+        right = self.send_left(field[:halo], "x")
+        padded = jnp.concatenate((left, field, right), axis=0)
+        padded = jnp.pad(padded, ((0, 0),) + ((halo, halo),) * (self.dim - 1) + ((0, 0),), mode="wrap")
+        spatial = field.shape[:-1]
+
+        gradient = [None] * self.dim
+        for offset, vector in self._efm_offsets:
+            value = padded[tuple(slice(halo + o, halo + o + n) for o, n in zip(offset, spatial, strict=True))]
+            for axis, weight in enumerate(vector):
+                if weight == 0.0:
+                    continue
+                term = value * weight
+                gradient[axis] = term if gradient[axis] is None else gradient[axis] + term
+        return jnp.concatenate(gradient, axis=-1)
 
     def _create_boundary_data(self):
         """
@@ -2223,9 +2246,9 @@ class Multiphase(LBMBase):
     @partial(jit, static_argnums=(0,))
     def compute_potential(self, rho_tree, T=None):
         """
-        Compute the potential (psi and U) which is required for computing interaction forces.
-        The psi values are obtained using the corresponding EOS. This function can be overloaded to handle cases where one or more component does not
-        have EOS.
+        Compute the effective mass (psi) in the decoupled mesh space, which is required for computing interaction forces.
+        The psi values are obtained using the corresponding EOS: psi = sqrt(2 * (lambda_^2 * p - cs2 * rho) / g_kk). This function can be
+        overloaded to handle cases where one or more component does not have EOS.
 
         Parameters
         ----------
@@ -2239,21 +2262,18 @@ class Multiphase(LBMBase):
         """
         rho_tree = tree_map(lambda rho: self.precision_policy.cast_to_compute(rho), rho_tree)
         p_tree = self.compute_pressure(rho_tree, T=T)
-        # Shan-Chen potential using modified pressure
-        psi_tree = tree_map(
-            lambda k, p, rho, G: jnp.sqrt(2 * (k * p - self.lattice.cs2 * rho) / G), self.k, p_tree, rho_tree, self.g_kkprime.diagonal().tolist()
-        )
-        # Zhang-Chen potential
-        U_tree = tree_map(lambda k, p, rho: k * p - self.lattice.cs2 * rho, self.k, p_tree, rho_tree)
-        return psi_tree, U_tree
+        return [
+            jnp.sqrt((2.0 / G) * (lam * lam * p - self.lattice.cs2 * rho))
+            for lam, p, rho, G in zip(self.lambda_, p_tree, rho_tree, self._g_host.diagonal().tolist(), strict=True)
+        ]
 
-    # Compute the force using the effective mass (psi) and the interaction potential (phi)
+    # Compute the force using the effective mass (psi)
     @partial(jit, static_argnums=(0,))
     def _compute_force_fields(self, rho_tree, T=None):
-        """Return force plus the contact-angle-adjusted potentials used to construct it."""
+        """Return force plus the contact-angle-adjusted effective mass used to construct it."""
         rho_tree = self.apply_contact_angle(rho_tree)
-        psi_tree, U_tree = self.compute_potential(rho_tree, T=T)
-        fluid_fluid_force = self.compute_fluid_fluid_force(psi_tree, U_tree)
+        psi_tree = self.compute_potential(rho_tree, T=T)
+        fluid_fluid_force = self.compute_fluid_fluid_force(psi_tree)
         # fluid_solid_force = self.compute_fluid_solid_force(rho_tree)
         if self.body_force is not None:
             force_tree = tree_map(lambda ff, rho: ff + self.body_force * rho, fluid_fluid_force, rho_tree)
@@ -2261,9 +2281,9 @@ class Multiphase(LBMBase):
             force_tree = fluid_fluid_force
         if self.wetting_formulation == "geometric" and any(self._has_wetting_bc):
             force_tree = tree_map(lambda force, force_mask: force * force_mask, force_tree, self.geometric_force_mask)
-        return force_tree, psi_tree, U_tree
+        return force_tree, psi_tree
 
-    # Compute the force using the effective mass (psi) and the interaction potential (phi)
+    # Compute the force using the effective mass (psi)
     @partial(jit, static_argnums=(0,))
     def compute_force(self, rho_tree, T=None):
         """
@@ -2279,24 +2299,22 @@ class Multiphase(LBMBase):
         -------
         fluid_fluid_force (pytree of jax.numpy.ndarray): Total force field.
         """
-        force_tree, _, _ = self._compute_force_fields(rho_tree, T=T)
+        force_tree, _ = self._compute_force_fields(rho_tree, T=T)
         return force_tree
 
     @partial(jit, static_argnums=(0,))
-    def compute_fluid_fluid_force(self, psi_tree, U_tree):
+    def compute_fluid_fluid_force(self, psi_tree):
         """
-        Compute the fluid-fluid interaction force using the effective mass (psi).
-        The force calculation is based on the Shan-Chen method using the weighted sum
-        of Shan-Chen and Zhang-Chen potential where modified pressure is used:
+        Compute the fluid-fluid interaction force from the effective mass (psi):
 
-        modified pressure = k * pressure;
-        k is defined by user. Set k=1 for default pseudopotential formulation.
+            F_k = -psi_k * sum_k' g_kk' * grad(psi_k'),
+
+        with grad the fourth-order isotropic EFM gradient (scalar_gradient). For a single component with g = -1 this is
+        F = -grad(lambda_^2 * p - cs2 * rho), the mesh-space force of Qin et al. (2022) / Yang & Qin (2024).
 
         Parameters
         ----------
-        psi_tree (pytree of jax.numpy.ndarray): Pseudo-potential field (Yuan-Schaefer, with modification)
-
-        U_tree (pytree of jax.numpy.ndarray): Pseudo-potential field (Zhang-Chen, with modification)
+        psi_tree (pytree of jax.numpy.ndarray): Effective mass field.
 
         Returns
         -------
@@ -2304,30 +2322,21 @@ class Multiphase(LBMBase):
 
         Notes
         -----
-        jnp.dot(G_ff * field_s, c), with field_s the q-channel streamed field, is a G_ff*c weighted directional
-        sum of neighbor values - exactly what scalar_force_stencil computes directly from the unstreamed scalar
-        field (see _neighbor_stencil_m). Computed once per component here, outside the per-output-component
-        vmap below, matching the original psi_s_tree/U_s_tree precompute (scalar_force_stencil is itself a
-        shard_map'd call and must not be invoked from inside vmap).
+        Gradients are computed once per source component, outside the per-output-component combine
+        (scalar_gradient is a shard_map'd call and must not be invoked from inside vmap).
         """
-        psi_stencil_tree = [
-            self.scalar_force_stencil(psi) if used else None for psi, used in zip(psi_tree, self._psi_stencil_components, strict=True)
-        ]
-        U_stencil_tree = [self.scalar_force_stencil(U) if used else None for U, used in zip(U_tree, self._U_stencil_components, strict=True)]
+        gradient_tree = [self.scalar_gradient(psi) if used else None for psi, used in zip(psi_tree, self._psi_stencil_components, strict=True)]
 
         force_tree = []
         for output in range(self.n_components):
-            psi_terms = [
-                (1.0 - self.A[output, source]) * self.g_kkprime[output, source] * psi_stencil_tree[source]
+            terms = [
+                float(self._g_host[output, source]) * gradient_tree[source]
                 for source in range(self.n_components)
                 if self._psi_interactions[output][source]
             ]
-            U_terms = [self.A[output, source] * U_stencil_tree[source] for source in range(self.n_components) if self._U_interactions[output][source]]
-            force = psi_tree[output] * reduce(operator.add, psi_terms) if psi_terms else None
-            if U_terms:
-                U_force = reduce(operator.add, U_terms)
-                force = U_force if force is None else force + U_force
-            if force is None:
+            if terms:
+                force = -psi_tree[output] * reduce(operator.add, terms)
+            else:
                 force = jnp.zeros((*psi_tree[output].shape[:-1], self.dim), dtype=self.precision_policy.compute_dtype)
             force_tree.append(force)
         return force_tree
@@ -2618,7 +2627,7 @@ class Multiphase(LBMBase):
                 logger.info(f"Saving data at timestep {timestep}/{t_max}")
                 rho_tree, _ = self.update_macroscopic(f_tree)
                 u_tree = self.macroscopic_velocity(f_tree, rho_tree)
-                psi_tree, _ = self.compute_potential(rho_tree)
+                psi_tree = self.compute_potential(rho_tree)
                 p_tree = self.compute_pressure(rho_tree, psi_tree)
                 p_total = self.compute_total_pressure(p_tree, rho_tree)
                 p_total = downsample_field(p_total, self.downsampling_factor)
@@ -2936,7 +2945,7 @@ class MultiphaseMRT(Multiphase):
             scalar_spec = P("x", None, None) if self.dim == 2 else P("x", None, None, None)
             self.scalar_surface_stencil = jit(
                 shard_map(
-                    partial(self._surface_stencil_m, weights=surface_weights),
+                    partial(self._neighbor_stencil_m, weights=surface_weights),
                     mesh=self.mesh,
                     in_specs=scalar_spec,
                     out_specs=scalar_spec,
@@ -2971,6 +2980,8 @@ class MultiphaseMRT(Multiphase):
         Adjust surface tension in multiphase MRT model. It does not effect the coexistence densities. Assumes orthogonal collision
         matrix (see the pool boiling 3D example) instead of raw-moments (see the droplet 3D example).
 
+        Uses the papers' convention: surface tension scales as (1 - kappa), so kappa = 0 leaves it unchanged and kappa = 1 removes it.
+
         Parameters
         ----------
         psi_tree: pytree of jax.numpy.ndarray
@@ -2984,23 +2995,19 @@ class MultiphaseMRT(Multiphase):
         if not isinstance(self.lattice, (LatticeD2Q9, LatticeD3Q19)):
             raise NotImplementedError("MRT model with D3Q27 model has not been implemented")
 
-        n_moments = 3 if self.dim == 2 else 6
         C_tree = []
-        for component, (kappa, A, s_v, s_e, s_eta, psi) in enumerate(
-            zip(self.kappa, self.A.diagonal(), self.s_v, self.s_e, self.s_eta, psi_tree, strict=True)
+        g_diagonal = self._g_host.diagonal().tolist()
+        for component, (kappa, g, s_v, s_e, s_eta, psi) in enumerate(
+            zip(self.kappa, g_diagonal, self.s_v, self.s_e, self.s_eta, psi_tree, strict=True)
         ):
             if not self._surface_tension_components[component]:
                 C_tree.append(jnp.zeros((*psi.shape[:-1], self.q), dtype=self.precision_policy.compute_dtype))
                 continue
 
-            moments = self.scalar_surface_stencil(psi)
-            psi_moments = moments[..., :n_moments]
-            psi_squared_moments = moments[..., n_moments:]
+            psi_moments = self.scalar_surface_stencil(psi)
             centered_psi = psi_moments - psi * self.surface_moment_center
-            centered_psi_squared = psi_squared_moments - jnp.square(psi) * self.surface_moment_center
-            tm1 = psi * centered_psi
-            tm2 = centered_psi_squared
-            qmoments = -kappa * ((1.0 - A) * tm1 + 0.5 * A * tm2)
+            # Q = kappa * (G / 2) * psi * sum_i w_i (psi(x + e_i) - psi(x)) e_i e_i (Li & Luo 2013), so sigma ~ (1 - kappa).
+            qmoments = (0.5 * g * kappa) * psi * centered_psi
             C = jnp.zeros((*psi.shape[:-1], self.q), dtype=self.precision_policy.compute_dtype)
             if self.dim == 2:
                 qxx, qxy, qyy = (qmoments[..., index] for index in range(3))
@@ -3010,7 +3017,9 @@ class MultiphaseMRT(Multiphase):
                 C = C.at[..., 8].set(-s_v * qxy)
             else:
                 qxx, qxy, qxz, qyy, qyz, qzz = (qmoments[..., index] for index in range(6))
-                C = C.at[..., 1].set((2.0 / 5.0) * s_e * (qxx + qyy + qzz))
+                # e = 19|c|^2 - 30: keeping the normal pressure fixed while the tangential part changes by -kappa needs
+                # delta(tr Pi) = (4/5) tr Q, i.e. (76/5) s_e tr Q (Yang & Qin 2024, Eq. 25).
+                C = C.at[..., 1].set((76.0 / 5.0) * s_e * (qxx + qyy + qzz))
                 C = C.at[..., 9].set(-s_v * (2.0 * qxx - qyy - qzz))
                 C = C.at[..., 11].set(-s_v * (qyy - qzz))
                 C = C.at[..., 13].set(-s_v * qxy)
@@ -3097,8 +3106,8 @@ class MultiphaseMRT(Multiphase):
         rho_tree, u_tree = self.update_macroscopic(fin_tree)
 
         force_rho_tree = self.apply_contact_angle(rho_tree)
-        psi_tree, U_tree = self.compute_potential(force_rho_tree, T=T)
-        F_tree = self.compute_fluid_fluid_force(psi_tree, U_tree)
+        psi_tree = self.compute_potential(force_rho_tree, T=T)
+        F_tree = self.compute_fluid_fluid_force(psi_tree)
         if self.body_force is not None:
             F_tree = tree_map(lambda force, rho: force + self.body_force * rho, F_tree, force_rho_tree)
 
@@ -3165,7 +3174,7 @@ class MultiphaseMRT(Multiphase):
         feq_tree = self.equilibrium(rho_tree, u_tree, cast_output=False)
         surface_psi_tree = None
         if self._has_surface_tension and self._uses_default_compute_force:
-            F_tree, force_psi_tree, _ = self._compute_force_fields(rho_tree, T=T)
+            F_tree, force_psi_tree = self._compute_force_fields(rho_tree, T=T)
             delta_feq_tree = self._force_delta_feq(rho_tree, u_tree, F_tree)
             if self.wetting_formulation is None or not any(self._has_wetting_bc):
                 surface_psi_tree = force_psi_tree
@@ -3183,7 +3192,7 @@ class MultiphaseMRT(Multiphase):
 
         if self._has_surface_tension:
             if surface_psi_tree is None:
-                surface_psi_tree, _ = self.compute_potential(rho_tree, T=T)
+                surface_psi_tree = self.compute_potential(rho_tree, T=T)
             C_tree = self.adjust_surface_tension(surface_psi_tree)
             fout_tree = [
                 fout + jnp.dot(C, M_inv) if has_surface_tension else fout
@@ -4179,7 +4188,7 @@ class MultiphaseCascade(Multiphase):
         f_postcollision_tree (pytree of jax.numpy.ndarray): The post-collision distribution functions with the force applied.
         """
         F_tree = self.compute_force(rho_tree, T=T)
-        psi_tree, _ = self.compute_potential(rho_tree, T=T)
+        psi_tree = self.compute_potential(rho_tree, T=T)
         return self._apply_force_fields(Tdash_tree, F_tree, psi_tree)
 
     @partial(jit, static_argnums=(0,))
@@ -4196,7 +4205,7 @@ class MultiphaseCascade(Multiphase):
             u_tree = self.macroscopic_velocity(fin_tree, rho_tree, T=T)
         elif self._uses_default_macroscopic_velocity:
             if self._uses_default_compute_force:
-                F_tree, force_psi_tree, _ = self._compute_force_fields(rho_tree, T=T)
+                F_tree, force_psi_tree = self._compute_force_fields(rho_tree, T=T)
             else:
                 F_tree = self.compute_force(rho_tree, T=T)
             u_tree = tree_map(lambda rho, u, F: u + 0.5 * F / rho, rho_tree, raw_u_tree, F_tree)
@@ -4213,7 +4222,7 @@ class MultiphaseCascade(Multiphase):
             Tout_tree = self.apply_force(Tout_tree, rho_tree, u_tree, T=T)
         else:
             if force_psi_tree is None or (self.wetting_formulation is not None and any(self._has_wetting_bc)):
-                psi_tree, _ = self.compute_potential(rho_tree, T=T)
+                psi_tree = self.compute_potential(rho_tree, T=T)
             else:
                 psi_tree = force_psi_tree
             Tout_tree = self._apply_force_fields(Tout_tree, F_tree, psi_tree)

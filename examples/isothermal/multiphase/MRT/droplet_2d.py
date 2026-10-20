@@ -126,8 +126,7 @@ if __name__ == "__main__":
         "g_kkprime": -1.0 * np.ones((1, 1)),
         "EOS": eos,
         "body_force": [0.0, 0.0],
-        "k": [0.16],
-        "A": -0.032 * np.ones((1, 1)),
+        "lambda_": [0.4],
         "M": [M],
         "s_rho": s_rho,
         "s_e": s_e,
@@ -135,7 +134,7 @@ if __name__ == "__main__":
         "s_j": s_j,
         "s_q": s_q,
         "s_v": s_v,
-        "kappa": [1.0],
+        "kappa": [2.0],  # = old kappa 1.0 under the papers' convention (sigma ~ 1 - kappa): negative surface tension, retune
         "precision": precision,
         "io_rate": 10000,
         "compute_MLUPS": True,

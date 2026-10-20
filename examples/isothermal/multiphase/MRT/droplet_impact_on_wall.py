@@ -190,8 +190,7 @@ if __name__ == "__main__":
         "g_kkprime": -1.0 * np.ones((1, 1)),
         "EOS": eos,
         "body_force": [0.0, 1e-5, 0.0],
-        "k": [0.05],
-        "A": -0.028 * np.ones((1, 1)),
+        "lambda_": [0.05**0.5],  # k = lambda_**2 = 0.05
         "s_rho": s_rho,
         "s_e": s_e,
         "s_eta": s_eta,

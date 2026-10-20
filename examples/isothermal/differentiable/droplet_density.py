@@ -169,8 +169,7 @@ if __name__ == "__main__":
         "nx": nx,
         "ny": ny,
         "nz": 0,
-        "k": [0.1],
-        "A": -0.33 * np.ones((1, 1)),
+        "lambda_": [0.1**0.5],  # k = lambda_**2 = 0.1
         "g_kkprime": -1.0 * np.ones((1, 1)),
         "EOS": VanderWaals(**{"a": [a], "b": [b], "R": [R], "T": T}),
         "body_force": [0.0, 0.0],

@@ -464,11 +464,6 @@ if __name__ == "__main__":
     pr_omega = [0.344, 0.22491]
     T = Tc_w
 
-    A = np.zeros((2, 2))
-    A_kk = 0.0
-    A[0, 0] = A_kk
-    A[1, 1] = A_kk
-
     kwargs = {"a": a, "b": b, "pr_omega": pr_omega, "R": R, "T": T}
     eos = PengRobinson(**kwargs)
 
@@ -493,8 +488,7 @@ if __name__ == "__main__":
             "s_m": s_m,
             "s_pi": s_pi,
             "kappa": [0, 0],
-            "k": [0.125, 0.125],
-            "A": A,
+            "lambda_": [0.125**0.5, 0.125**0.5],  # k = lambda_**2 = 0.125, 0.125
             "io_rate": 10000,
             "compute_MLUPS": False,
             "print_info_rate": 10000,
@@ -544,8 +538,7 @@ if __name__ == "__main__":
         "s_pi": s_pi,
         "kappa": [0, 0],
         "wetting_formulation": "improved_virtual_density",
-        "k": [0.125, 0.125],
-        "A": A,
+        "lambda_": [0.125**0.5, 0.125**0.5],  # k = lambda_**2 = 0.125, 0.125
         "io_rate": 10000,
         "compute_MLUPS": False,
         "print_info_rate": 10000,
@@ -615,9 +608,8 @@ if __name__ == "__main__":
         "s_m": s_m,
         "kappa": [0.0, 0.0],
         "wetting_formulation": "improved_virtual_density",
-        "k": [0.125, 0.125],
+        "lambda_": [0.125**0.5, 0.125**0.5],  # k = lambda_**2 = 0.125, 0.125
         "EOS": eos,
-        "A": np.zeros((2, 2)),
         "io_rate": 1000,
         "compute_MLUPS": False,
         "print_info_rate": 1000,

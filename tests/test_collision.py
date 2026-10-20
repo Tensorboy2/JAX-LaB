@@ -214,8 +214,7 @@ def test_multiphase_collision_against_taylor_green(model_class, lattice_class, d
         "n_components": 1,
         "omega": [OMEGA],
         "g_kkprime": -np.ones((1, 1)),
-        "k": [1.0],
-        "A": np.zeros((1, 1)),
+        "lambda_": [1.0],
         "EOS": VanderWaals(a=[9.0 / 49.0], b=[2.0 / 21.0], R=[1.0], T=0.8 * 0.5714285714),
     }
     if model_class is MultiphaseMRT:
