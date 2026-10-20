@@ -5,6 +5,7 @@ Definition of Multiphase class for simulating a multiphase flow.
 import logging
 import operator
 import time
+import warnings
 
 # System libraries
 from functools import partial
@@ -45,6 +46,29 @@ logger = logging.getLogger(__name__)
 
 # This significantly reduces the performance. Use if necessary
 # jax.config.update("jax_debug_nans", True)
+
+
+def _lattice_dot(direction, vector):
+    """c_i . v for an integer lattice direction and per-axis fields, as additions only (0.0 for the rest direction)."""
+    total = None
+    for component, value in zip(direction, vector, strict=True):
+        if component == 0:
+            continue
+        term = value * float(component) if abs(component) != 1 else (value if component > 0 else -value)
+        total = term if total is None else total + term
+    return 0.0 if total is None else total
+
+
+def _lattice_sum(directions, channels, axis):
+    """sum_i c_i[axis] f_i over per-direction fields."""
+    total = None
+    for direction, value in zip(directions, channels, strict=True):
+        component = direction[axis]
+        if component == 0:
+            continue
+        term = value * float(component) if abs(component) != 1 else (value if component > 0 else -value)
+        total = term if total is None else total + term
+    return total
 
 
 class Multiphase(LBMBase):
@@ -2734,6 +2758,7 @@ class Multiphase(LBMBase):
                         "red",
                     )
                 )
+        self._output_writer.finish()
         if self.mngr is not None:
             self.mngr.wait_until_finished()
         return f_tree
@@ -2816,7 +2841,7 @@ class Multiphase(LBMBase):
             "f_poststreaming_tree": f_tree,
             "f_postcollision_tree": fstar_tree,
         }
-        self.output_data(**kwargs)
+        self._output_writer.submit(self.output_data, kwargs)
 
 
 class MultiphaseBGK(Multiphase):
@@ -2849,9 +2874,9 @@ class MultiphaseBGK(Multiphase):
 class MultiphaseMRT(Multiphase):
     """Multiphase MRT solver with fused sparse collision kernels.
 
-    The optimized kernel is used for the default equilibrium and force model (with or
-    without the kappa surface-tension term on D2Q9/D3Q19) when wetting is absent or uses
-    improved virtual density. Other configurations use the general fused MRT kernel.
+    One fused collision serves every configuration: overridden update_macroscopic,
+    equilibrium, compute_force or adjust_surface_tension methods, wetting schemes and the
+    kappa surface-tension term are handled inside it (see collision()).
     """
 
     def __init__(self, **kwargs):
@@ -2930,6 +2955,8 @@ class MultiphaseMRT(Multiphase):
         # (f @ M, relax, @ M_inv) in collision() with symbolic, sparse-coefficient columns compiled from K's
         # nonzero entries - see collision() and its module-level References for the fusion identity.
         self.collision_matrix = tree_map(lambda M, S, M_inv: jnp.dot(jnp.dot(M, S), M_inv), self.M, self.S, self.M_inv)
+        self._lattice_directions = tuple(tuple(int(v) for v in np.asarray(self.lattice.c)[:, i]) for i in range(self.lattice.q))
+        self._lattice_weights = tuple(float(v) for v in np.asarray(self.lattice.w))
         self.collision_terms = []
         coefficient_dtype = np.float64 if self.precision_policy.compute_dtype == jnp.float64 else np.float32
         for collision_matrix in self.collision_matrix:
@@ -2949,12 +2976,13 @@ class MultiphaseMRT(Multiphase):
         # it entirely in that case, rather than multiplying by a provably-zero array every timestep.
         self._surface_tension_components = tuple(float(kappa) != 0.0 for kappa in self.kappa)
         self._has_surface_tension = any(self._surface_tension_components)
-        self._uses_fast_mrt_collision = (
-            self._uses_default_mrt_equilibrium
-            and self._uses_default_compute_force
-            and (not self._has_surface_tension or isinstance(self.lattice, (LatticeD2Q9, LatticeD3Q19)))
-            and self.wetting_formulation in (None, "improved_virtual_density")
-        )
+        # Extension points honored by collision(); the defaults take the fused per-direction formulation.
+        self._uses_default_update_macroscopic = type(self).update_macroscopic is Multiphase.update_macroscopic
+        self._uses_default_surface_tension = type(self).adjust_surface_tension is MultiphaseMRT.adjust_surface_tension
+        if self._has_surface_tension and self._uses_default_surface_tension:
+            if not isinstance(self.lattice, (LatticeD2Q9, LatticeD3Q19)):
+                raise NotImplementedError("The kappa surface-tension adjustment is implemented for D2Q9 and D3Q19 only.")
+            self._check_surface_tension_basis(kwargs.get("M"))
         self.scalar_surface_stencil = None
         self.scalar_gradient_surface = None
         self.surface_moment_center = None
@@ -3163,140 +3191,150 @@ class MultiphaseMRT(Multiphase):
         delta_meq_tree = tree_map(lambda delta_feq, M: jnp.dot(delta_feq, M), delta_feq_tree, self.M)
         return tree_map(lambda m, delta_meq: m + delta_meq, m_tree, delta_meq_tree)
 
-    @partial(jit, static_argnums=(0,))
-    def _collision_fast(self, fin_tree, T=None):
-        """Run the default MRT kernel, with optional surface-tension adjustment and virtual-density wetting."""
-        fin_tree = tree_map(self.precision_policy.cast_to_compute, fin_tree)
-        rho_tree, u_tree = self.update_macroscopic(fin_tree)
+    def _check_surface_tension_basis(self, matrices):
+        """
+        Warn when kappa is used with a moment basis other than the one the surface-tension source is defined in.
 
-        force_rho_tree = self.apply_contact_angle(rho_tree)
-        psi_tree = self.compute_potential(force_rho_tree, T=T)
-        uses_wetting = self.wetting_formulation is not None and any(self._has_wetting_bc)
-        surface_tree = [None] * self.n_components
-        if self._has_surface_tension and not uses_wetting and type(self).compute_fluid_fluid_force is Multiphase.compute_fluid_fluid_force:
-            gradient_tree, moments_tree = [], []
-            for psi, used, has_surface_tension in zip(psi_tree, self._psi_stencil_components, self._surface_tension_components, strict=True):
-                if has_surface_tension:
-                    stencil = self.scalar_gradient_surface(psi)
-                    gradient_tree.append(stencil[..., : self.dim])
-                    moments_tree.append(stencil[..., self.dim :])
-                else:
-                    gradient_tree.append(self.scalar_gradient(psi) if used else None)
-                    moments_tree.append(None)
-            F_tree = self._fluid_fluid_force_from_gradients(psi_tree, gradient_tree)
-            surface_tree = self._surface_source_moments(psi_tree, moments_tree)
+        The source term C places tr(Q) and the deviatoric Q components on specific orthogonal moments (McCracken & Abraham /
+        Li & Luo in 2D, d'Humieres et al. in 3D, as in examples/thermal/multiphase/MRT/pool_boiling_3d.py). With other rows
+        or row order the term lands on different moments and sigma no longer scales as (1 - kappa).
+        """
+        e = np.asarray(self.lattice.c).T.astype(np.float64)
+        c2 = np.sum(e**2, axis=1)
+        x, y = e[:, 0], e[:, 1]
+        if self.dim == 2:
+            expected = {1: -4 + 3 * c2, 2: 4 - 10.5 * c2 + 4.5 * c2**2, 7: x**2 - y**2, 8: x * y}
         else:
-            F_tree = self.compute_fluid_fluid_force(psi_tree)
-            if self._has_surface_tension:
-                # Same potential as the general path: the contact-angle-adjusted one unless wetting is active.
-                surface_tree = self._surface_source_moments(self.compute_potential(rho_tree, T=T) if uses_wetting else psi_tree)
-        if self.body_force is not None:
-            F_tree = tree_map(lambda force, rho: force + self.body_force * rho, F_tree, force_rho_tree)
+            z = e[:, 2]
+            expected = {1: 19 * c2 - 30, 9: 3 * x**2 - c2, 11: y**2 - z**2, 13: x * y, 14: y * z, 15: x * z}
+        for component, (matrix, has_surface_tension) in enumerate(zip(matrices, self._surface_tension_components, strict=True)):
+            matrix = np.asarray(matrix, dtype=np.float64)
+            if has_surface_tension and not all(np.allclose(matrix[k], row) for k, row in expected.items()):
+                warnings.warn(
+                    f"Component {component}: kappa != 0 with an MRT matrix whose rows {sorted(expected)} are not the orthogonal "
+                    "basis the surface-tension source is defined in; the adjustment will not follow sigma ~ (1 - kappa). "
+                    "Use the orthogonal basis (see pool_boiling_3d.py) or override adjust_surface_tension.",
+                    stacklevel=3,
+                )
 
-        c = jnp.asarray(self.c, dtype=self.precision_policy.compute_dtype)
-        cu_tree = tree_map(lambda u: 3.0 * jnp.dot(u, c), u_tree)
-        usqr_tree = tree_map(lambda u: 1.5 * jnp.sum(jnp.square(u), axis=-1, keepdims=True), u_tree)
-        feq_tree = tree_map(
-            lambda rho, cu, usqr: rho * self.w * (1.0 + cu * (1.0 + 0.5 * cu) - usqr),
-            rho_tree,
-            cu_tree,
-            usqr_tree,
-        )
-
-        du_tree = tree_map(lambda force, rho: force / rho, F_tree, rho_tree)
-        dcu_tree = tree_map(lambda du: 3.0 * jnp.dot(du, c), du_tree)
-        delta_usqr_tree = tree_map(
-            lambda u, du: 1.5 * (2.0 * jnp.sum(u * du, axis=-1, keepdims=True) + jnp.sum(jnp.square(du), axis=-1, keepdims=True)),
-            u_tree,
-            du_tree,
-        )
-        delta_feq_tree = tree_map(
-            lambda rho, cu, dcu, delta_usqr: rho * self.w * (dcu * (1.0 + cu + 0.5 * dcu) - delta_usqr),
-            rho_tree,
-            cu_tree,
-            dcu_tree,
-            delta_usqr_tree,
-        )
-
-        fout_tree = []
-        for f, feq, delta_feq, columns, moments, surface_terms in zip(
-            fin_tree, feq_tree, delta_feq_tree, self.collision_terms, surface_tree, self._surface_population_terms, strict=True
-        ):
-            difference = f - feq
-            outputs = []
-            for output_direction, terms in enumerate(columns):
-                relaxed = sum(difference[..., input_direction] * coefficient for input_direction, coefficient in terms)
-                value = f[..., output_direction] - relaxed + delta_feq[..., output_direction]
-                if moments is not None:
-                    value = value + sum(moments[k] * coefficient for k, coefficient in surface_terms[output_direction])
-                outputs.append(value)
-            fout_tree.append(jnp.stack(outputs, axis=-1))
-
-        rho_out_tree = tree_map(lambda fout: jnp.sum(fout, axis=-1, keepdims=True), fout_tree)
-        fout_tree = tree_map(lambda fout, rho, rho_out: fout.at[..., 0].add((rho - rho_out)[..., 0]), fout_tree, rho_tree, rho_out_tree)
-        return tree_map(self.precision_policy.cast_to_output, fout_tree)
-
+    @partial(jit, static_argnums=(0,))
     def collision(self, fin_tree, T=None):
-        """Apply the MRT collision and exact-difference force.
-
-        Uses the optimized kernel for the default equilibrium and force model with
-        either no wetting or improved virtual-density wetting; otherwise uses the
-        general kernel. Both fuse relaxation as
-        ``f - (f - feq) @ (M @ S @ M_inv) + delta_feq + C @ M_inv``.
         """
-        if self._uses_fast_mrt_collision:
-            return self._collision_fast(fin_tree, T=T)
-        return self._collision_general(fin_tree, T=T)
+        Apply the MRT collision with exact-difference forcing and the optional kappa surface-tension source:
 
-    @partial(jit, static_argnums=(0,))
-    def _collision_general(self, fin_tree, T=None):
-        """Run fused MRT collision with custom-model and surface-tension support.
+            fout = f - (f - feq) @ (M @ S @ M_inv) + delta_feq + C @ M_inv
 
-        The sparse coefficients represent ``M @ S @ M_inv``. Force is added in
-        population space, while a nonzero surface correction is transformed by
-        ``M_inv``.
+        The relaxation uses the sparse nonzero entries of M @ S @ M_inv built from the user's M and S, so any invertible
+        moment basis works. With the default update_macroscopic, equilibrium, force and surface-tension methods every term
+        is evaluated per direction with the lattice velocities as compile-time constants (no cells x q matrix products), so
+        XLA fuses moments, equilibrium, forcing and relaxation into one loop; overriding any of those methods routes that
+        term through the override instead. The optional temperature field T is forwarded to the pressure and force
+        computations for thermal EOS.
         """
-        fin_tree = tree_map(lambda f: self.precision_policy.cast_to_compute(f), fin_tree)
-        rho_tree, u_tree = self.update_macroscopic(fin_tree)
-        feq_tree = self.equilibrium(rho_tree, u_tree, cast_output=False)
-        surface_psi_tree = None
-        if self._has_surface_tension and self._uses_default_compute_force:
-            F_tree, force_psi_tree = self._compute_force_fields(rho_tree, T=T)
-            delta_feq_tree = self._force_delta_feq(rho_tree, u_tree, F_tree)
-            if self.wetting_formulation is None or not any(self._has_wetting_bc):
-                surface_psi_tree = force_psi_tree
+        fin_tree = tree_map(self.precision_policy.cast_to_compute, fin_tree)
+        directions, weights = self._lattice_directions, self._lattice_weights
+        channels_tree = [[f[..., i] for i in range(self.q)] for f in fin_tree]
+        if self._uses_default_update_macroscopic:
+            rho_scalar_tree = [sum(channels) for channels in channels_tree]
+            velocity_tree = [
+                [_lattice_sum(directions, channels, axis) / rho for axis in range(self.dim)]
+                for channels, rho in zip(channels_tree, rho_scalar_tree, strict=True)
+            ]
+            rho_tree = [rho[..., None] for rho in rho_scalar_tree]
         else:
-            delta_feq_tree = self._compute_force_delta_feq(rho_tree, u_tree, T=T)
+            rho_tree, u_tree = self.update_macroscopic(fin_tree)
+            rho_scalar_tree = [rho[..., 0] for rho in rho_tree]
+            velocity_tree = [[u[..., axis] for axis in range(self.dim)] for u in u_tree]
 
-        fout_tree = []
-        for f, feq, delta_feq, columns in zip(fin_tree, feq_tree, delta_feq_tree, self.collision_terms, strict=True):
-            difference = f - feq
-            outputs = []
-            for output_direction, terms in enumerate(columns):
-                relaxed = sum(difference[..., input_direction] * coefficient for input_direction, coefficient in terms)
-                outputs.append(f[..., output_direction] - relaxed + delta_feq[..., output_direction])
-            fout_tree.append(jnp.stack(outputs, axis=-1))
+        # Force, and the potential/moments the surface-tension source is built from
+        uses_wetting = self.wetting_formulation is not None and any(self._has_wetting_bc)
+        surface_psi_tree = moments_tree = None
+        if self._uses_default_compute_force:
+            force_rho_tree = self.apply_contact_angle(rho_tree)
+            psi_tree = self.compute_potential(force_rho_tree, T=T)
+            fused_surface = (
+                self._has_surface_tension
+                and not uses_wetting
+                and self._uses_default_surface_tension
+                and type(self).compute_fluid_fluid_force is Multiphase.compute_fluid_fluid_force
+            )
+            if fused_surface:
+                gradient_tree, moments_tree = [], []
+                for psi, used, has_surface_tension in zip(psi_tree, self._psi_stencil_components, self._surface_tension_components, strict=True):
+                    if has_surface_tension:
+                        stencil = self.scalar_gradient_surface(psi)
+                        gradient_tree.append(stencil[..., : self.dim])
+                        moments_tree.append(stencil[..., self.dim :])
+                    else:
+                        gradient_tree.append(self.scalar_gradient(psi) if used else None)
+                        moments_tree.append(None)
+                F_tree = self._fluid_fluid_force_from_gradients(psi_tree, gradient_tree)
+            else:
+                F_tree = self.compute_fluid_fluid_force(psi_tree)
+            if self.body_force is not None:
+                F_tree = tree_map(lambda force, rho: force + self.body_force * rho, F_tree, force_rho_tree)
+            if self.wetting_formulation == "geometric" and any(self._has_wetting_bc):
+                F_tree = tree_map(lambda force, force_mask: force * force_mask, F_tree, self.geometric_force_mask)
+            if not uses_wetting:
+                surface_psi_tree = psi_tree
+        else:
+            F_tree = self.compute_force(rho_tree, T=T)
 
+        # Surface-tension source in population space, per component: list of q fields, or None
+        surface_tree = [None] * self.n_components
         if self._has_surface_tension:
             if surface_psi_tree is None:
                 surface_psi_tree = self.compute_potential(rho_tree, T=T)
-            C_tree = self.adjust_surface_tension(surface_psi_tree)
-            fout_tree = [
-                fout + jnp.dot(C, M_inv) if has_surface_tension else fout
-                for fout, C, M_inv, has_surface_tension in zip(
-                    fout_tree,
-                    C_tree,
-                    self.M_inv,
-                    self._surface_tension_components,
-                    strict=True,
-                )
-            ]
+            if self._uses_default_surface_tension:
+                source_moments = self._surface_source_moments(surface_psi_tree, moments_tree)
+                surface_tree = [
+                    None if moments is None else [sum(moments[k] * coefficient for k, coefficient in row) for row in terms]
+                    for moments, terms in zip(source_moments, self._surface_population_terms, strict=True)
+                ]
+            else:
+                C_tree = self.adjust_surface_tension(surface_psi_tree)
+                for component, (C, M_inv) in enumerate(zip(C_tree, self.M_inv, strict=True)):
+                    if self._surface_tension_components[component]:
+                        source = jnp.dot(C, M_inv)
+                        surface_tree[component] = [source[..., i] for i in range(self.q)]
 
-        if self.wetting_formulation == "geometric":
-            # Preserve the density moment after the geometric wetting update by applying any roundoff-level mismatch to the rest population.
-            rho_out_tree = tree_map(lambda fout: jnp.sum(fout, axis=-1, keepdims=True), fout_tree)
-            fout_tree = tree_map(lambda fout, rho, rho_out: fout.at[..., 0].add((rho - rho_out)[..., 0]), fout_tree, rho_tree, rho_out_tree)
-        return tree_map(lambda fout: self.precision_policy.cast_to_output(fout), fout_tree)
+        # Equilibrium per direction (default) or from the user's equilibrium()
+        if self._uses_default_mrt_equilibrium:
+            feq_tree = None
+        else:
+            u_tree = [jnp.stack(velocity, axis=-1) for velocity in velocity_tree]
+            feq_tree = [[feq[..., i] for i in range(self.q)] for feq in self.equilibrium(rho_tree, u_tree, cast_output=False)]
+        # Rest-population roundoff mass correction: default equilibrium (exactly mass conserving) or geometric wetting
+        restore_mass = self._uses_default_mrt_equilibrium or self.wetting_formulation == "geometric"
+
+        fout_tree = []
+        for component, (channels, rho, velocity, force, columns, surface) in enumerate(
+            zip(channels_tree, rho_scalar_tree, velocity_tree, F_tree, self.collision_terms, surface_tree, strict=True)
+        ):
+            du = [force[..., axis] / rho for axis in range(self.dim)]
+            usqr = 1.5 * sum(v * v for v in velocity)
+            delta_usqr = 1.5 * sum(2.0 * v * d + d * d for v, d in zip(velocity, du, strict=True))
+            difference, delta_feq = [], []
+            for i, (direction, w, f) in enumerate(zip(directions, weights, channels, strict=True)):
+                cu = 3.0 * _lattice_dot(direction, velocity)
+                dcu = 3.0 * _lattice_dot(direction, du)
+                rho_w = rho * w
+                feq = rho_w * (1.0 + cu * (1.0 + 0.5 * cu) - usqr) if feq_tree is None else feq_tree[component][i]
+                difference.append(f - feq)
+                delta_feq.append(rho_w * (dcu * (1.0 + cu + 0.5 * dcu) - delta_usqr))
+
+            outputs = []
+            for output_direction, terms in enumerate(columns):
+                relaxed = sum(difference[input_direction] * coefficient for input_direction, coefficient in terms)
+                value = channels[output_direction] - relaxed + delta_feq[output_direction]
+                if surface is not None:
+                    value = value + surface[output_direction]
+                outputs.append(value)
+            if restore_mass:
+                # Restore the density lost to roundoff on the rest population, from the per-direction values (no re-read).
+                outputs[0] = outputs[0] + (rho - sum(outputs))
+            fout_tree.append(jnp.stack(outputs, axis=-1))
+        return tree_map(self.precision_policy.cast_to_output, fout_tree)
 
 
 class MultiphaseCascade(Multiphase):

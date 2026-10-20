@@ -17,7 +17,7 @@ from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 from .boundary_conditions import INLET_OUTLET_BC_TYPES, WALL_BC_TYPES, BounceBack, BounceBackHalfway, EquilibriumBC, Regularized, ZouHe
 from .precision_policy import PrecisionPolicy
-from .utils import colored, downsample_field
+from .utils import AsyncOutputWriter, colored, downsample_field
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,15 @@ class LBMBase(object):
     compute_MLUPS (bool, optional): Whether to run in performance-measurement mode. Defaults to False.
 
     restore_checkpoint (bool, optional): Whether to restore the latest checkpoint. Defaults to False.
+
+    async_io (bool, optional): Run output_data on a background thread so compute continues while files are written.
+        Each output frame is copied to the host first. Defaults to True; False calls output_data synchronously.
+
+    io_queue_size (int, optional): Output frames that may wait to be written before the simulation pauses for the
+        writer. Defaults to 2.
+
+    io_populations (bool, optional): With async_io, also copy the population arrays passed to output_data to the host.
+        Defaults to False, since they are q times larger than a scalar field.
     """
 
     def __init__(self, **kwargs):
@@ -73,6 +82,7 @@ class LBMBase(object):
         self.return_fpost = kwargs.get("return_fpost", False)
         self.compute_MLUPS = kwargs.get("compute_MLUPS", False)
         self.restore_checkpoint = kwargs.get("restore_checkpoint", False)
+        self._output_writer = AsyncOutputWriter(kwargs.get("async_io", True), kwargs.get("io_queue_size", 2), kwargs.get("io_populations", False))
         self.n_devices = jax.device_count()
         self.backend = jax.default_backend()
 
@@ -1635,6 +1645,7 @@ class LBMBase(object):
                         "red",
                     )
                 )
+        self._output_writer.finish()
         if self.mngr is not None:
             self.mngr.wait_until_finished()
         return f
@@ -1671,7 +1682,7 @@ class LBMBase(object):
             "f_poststreaming": f,
             "f_postcollision": fstar,
         }
-        self.output_data(**kwargs)
+        self._output_writer.submit(self.output_data, kwargs)
 
     def output_data(self, **kwargs):
         """

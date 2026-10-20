@@ -79,6 +79,7 @@ class Thermal(object):
         self.dim = self.fluid_solver.dim
         self.streaming = self.fluid_solver.streaming
         self.io_rate = self.fluid_solver.io_rate
+        self._output_writer = self.fluid_solver._output_writer
         self.print_info_rate = self.fluid_solver.print_info_rate
         self.downsampling_factor = self.fluid_solver.downsampling_factor
         self.return_fpost = self.fluid_solver.return_fpost
@@ -622,6 +623,7 @@ class Thermal(object):
             self.mngr.wait_until_finished()
         if self.fluid_solver.mngr is not None:
             self.fluid_solver.mngr.wait_until_finished()
+        self._output_writer.finish()
         return f, T
 
     def handle_io_timestep(self, timestep, f, fstar, T, rho, u, T_prev, rho_prev, u_prev):
@@ -662,7 +664,7 @@ class Thermal(object):
             "f_poststreaming": f,
             "f_postcollision": fstar,
         }
-        self.output_data(**kwargs)
+        self._output_writer.submit(self.output_data, kwargs)
 
     def output_data(self, **kwargs):
         """

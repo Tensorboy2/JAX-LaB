@@ -576,6 +576,7 @@ class PallasMultiphaseBGK(MultiphaseBGK):
         if self.mngr is not None:
             self.mngr.wait_until_finished()
 
+        self._output_writer.finish()
         return [self.to_aos(f) for f in f_tree]
 
 

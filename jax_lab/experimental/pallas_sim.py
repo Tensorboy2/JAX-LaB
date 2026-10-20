@@ -225,7 +225,7 @@ class _PallasSoASimMixin:
             "f_poststreaming": f,
             "f_postcollision": fstar,
         }
-        self.output_data(**kwargs)
+        self._output_writer.submit(self.output_data, kwargs)
 
     @partial(jax.jit, static_argnums=(0,))
     def _run_fused_chunk(self, f, lo, hi):
@@ -352,6 +352,7 @@ class _PallasSoASimMixin:
         if self.mngr is not None:
             self.mngr.wait_until_finished()
 
+        self._output_writer.finish()
         return self.to_aos(f)
 
 

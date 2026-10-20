@@ -1,12 +1,16 @@
+import atexit
 import importlib
 import logging
 import os
+import queue
 import re
 import sys
+import threading
 import warnings
 from functools import cache, partial
 from time import time
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import jit
@@ -54,6 +58,108 @@ def _can_colorize(no_color=None, force_color=None):
         return os.isatty(sys.stdout.fileno())
     except OSError:
         return sys.stdout.isatty()
+
+
+POPULATION_OUTPUT_KEYS = ("f_poststreaming", "f_postcollision", "f_poststreaming_tree", "f_postcollision_tree")
+
+
+class _PopulationsNotCopied:
+    """Placeholder for population arrays that were not copied to the host for asynchronous output."""
+
+    def __init__(self, key):
+        self._key = key
+
+    def _fail(self, *args, **kwargs):
+        raise RuntimeError(
+            f"'{self._key}' is not available in output_data with async_io=True; pass io_populations=True to copy the "
+            "populations to the host for every output step, or async_io=False to call output_data synchronously."
+        )
+
+    __getattr__ = __getitem__ = __array__ = __iter__ = __len__ = _fail
+
+    def __repr__(self):
+        return f"<{self._key}: not copied (io_populations=False)>"
+
+
+class AsyncOutputWriter:
+    """
+    Run output callbacks on one background thread so simulation compute is decoupled from file writing.
+
+    Every submitted frame is first copied to host memory, so the simulation can keep reusing (donating) its device
+    buffers. Frames are written strictly in submission order by a single worker; at most ``queue_size`` frames wait at
+    a time, after which ``submit`` blocks until the writer catches up. This bounds host memory when output is frequent
+    and files are large, and a frame never starts writing while the previous one is still being written.
+
+    Parameters
+    ----------
+    enabled (bool): If False, ``submit`` calls the callback synchronously with the original (device) arrays.
+
+    queue_size (int): Maximum number of frames waiting to be written.
+
+    copy_populations (bool): Copy the population arrays (POPULATION_OUTPUT_KEYS) to the host as well. When False they are
+        replaced by a placeholder that raises a descriptive error if output_data uses them.
+    """
+
+    def __init__(self, enabled=True, queue_size=2, copy_populations=False):
+        if not isinstance(enabled, bool):
+            raise TypeError("async_io must be a boolean")
+        if not isinstance(queue_size, int) or isinstance(queue_size, bool) or queue_size < 1:
+            raise ValueError("io_queue_size must be a positive integer")
+        if not isinstance(copy_populations, bool):
+            raise TypeError("io_populations must be a boolean")
+        self.enabled = enabled
+        self.queue_size = queue_size
+        self.copy_populations = copy_populations
+        self._queue = None
+        self._thread = None
+        self._error = None
+        self._atexit_registered = False
+
+    def submit(self, callback, kwargs):
+        """Write one frame: synchronously if disabled, otherwise copy to the host and queue it."""
+        if not self.enabled:
+            callback(**kwargs)
+            return
+        self._raise_error()
+        snapshot = {
+            key: _PopulationsNotCopied(key) if key in POPULATION_OUTPUT_KEYS and not self.copy_populations else jax.device_get(value)
+            for key, value in kwargs.items()
+        }
+        if self._thread is None:
+            self._queue = queue.Queue(maxsize=self.queue_size)
+            self._thread = threading.Thread(target=self._worker, name="jax-lab-output", daemon=True)
+            self._thread.start()
+            if not self._atexit_registered:
+                # Finish queued frames even if the run loop exits with an exception.
+                atexit.register(self.finish)
+                self._atexit_registered = True
+        self._queue.put((callback, snapshot))  # blocks while queue_size frames are pending
+
+    def finish(self):
+        """Wait for every queued frame to be written and re-raise the first writer error, if any."""
+        if self._thread is not None:
+            self._queue.put(None)
+            self._thread.join()
+            self._thread = None
+            self._queue = None
+        self._raise_error()
+
+    def _raise_error(self):
+        if self._error is not None:
+            error, self._error = self._error, None
+            raise RuntimeError("Asynchronous output failed") from error
+
+    def _worker(self):
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            if self._error is None:  # after a failure, drain remaining frames without writing them
+                callback, snapshot = item
+                try:
+                    callback(**snapshot)
+                except BaseException as error:  # re-raised on the main thread
+                    self._error = error
 
 
 def colored(text, color, *, no_color=None, force_color=None):
