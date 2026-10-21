@@ -1,0 +1,211 @@
+"""
+Single component droplet impact on wall simulation, where liquid droplet is suspended in its vapor. The density of each region is computed using Maxwell's
+Construction. The density profile is initialized with smooth profile with specified interface width. Boundary conditions is BounceBack at the top and
+bottom, periodic everywhere else. This example demonstrates JAX-native in-situ GPU rendering.
+
+The collision matrix is based on:
+1. Coveney, P. V. et al. Multiple–relaxation–time lattice Boltzmann models in three dimensions. Philosophical Transactions of the Royal Society of London.
+Series A: Mathematical, Physical and Engineering Sciences 360, 437–451 (2002).
+"""
+
+import os
+import subprocess
+
+import numpy as np
+
+from jax_lab.core.boundary_conditions import BounceBackHalfway
+from jax_lab.core.lattice import LatticeD3Q19
+from jax_lab.core.shanchen.multiphase import MultiphaseMRT
+from jax_lab.core.shanchen.eos import PengRobinson
+
+from jax_lab.render import Light, Scene, SurfaceRendering
+
+from jax import config
+import jax.numpy as jnp
+
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
+logger = logging.getLogger(__name__)
+
+# config.update("jax_default_matmul_precision", "float32")
+
+
+class DropletOnWall3D(MultiphaseMRT):
+    def initialize_macroscopic_fields(self):
+        x = np.arange(self.nx, dtype=np.float32)[:, None, None]
+        y = np.arange(self.ny, dtype=np.float32)[None, :, None]
+        z = np.arange(self.nz, dtype=np.float32)[None, None, :]
+
+        rho_tree = []
+
+        dist = np.sqrt((x - self.nx / 2) ** 2 + (y - self.ny / 5) ** 2 + (z - self.nz / 2) ** 2)
+
+        rho = 0.5 * (rho_l + rho_g) - 0.5 * (rho_l - rho_g) * np.tanh(2 * (dist - r) / width)
+        rho = rho[..., None]
+
+        rho = self.distributed_array_init((self.nx, self.ny, self.nz, 1), self.precision_policy.compute_dtype, init_val=rho)
+        rho = self.precision_policy.cast_to_output(rho)
+        rho_tree.append(rho)
+
+        u = self.distributed_array_init((self.nx, self.ny, self.nz, 3), self.precision_policy.compute_dtype)
+        u = self.precision_policy.cast_to_output(u)
+        u_tree = [u]
+        return rho_tree, u_tree
+
+    def set_boundary_conditions(self):
+        # Only theta is used for geometric wetting scheme so other parameters (phi, delta_rho) do not need to be passed as they will be ignored.
+        walls = np.concatenate((self.bounding_box_indices["front"], self.bounding_box_indices["back"]))
+        walls = tuple(walls.T)
+        self.BCs[0].append(
+            BounceBackHalfway(walls, self.grid_info, self.precision_policy, vel=None, theta=theta[walls], phi=phi[walls], delta_rho=delta_rho[walls])
+        )
+
+        self.visualization_bc = jnp.zeros((self.nx, self.ny, self.nz), dtype=jnp.float32)
+        self.visualization_bc = self.visualization_bc.at[tuple(self.bounding_box_indices["back"].T)].set(1.0)
+
+    def output_data(self, **kwargs):
+        rho = jnp.array(kwargs["rho_tree"][0][0, ..., 0], dtype=self.precision_policy.compute_dtype)
+        dx, dy, dz = (0.01, 0.01, 0.01)
+        focal_point = (self.nx * dx / 2, self.ny * dy / 2, self.nz * dz)
+        camera_position = (self.nx * dx / 2, self.ny * dy / 2, -1.2 * self.nz * dz)
+        scene = Scene(
+            {
+                "density": SurfaceRendering(
+                    value_range=(7.6, rho_l),
+                    color=(1.0, 0.0, 0.0),
+                    metallic=0.0,
+                    roughness=0.35,
+                    spacing=(dx, dy, dz),
+                ),
+                "wall": SurfaceRendering(
+                    value_range=(0.95, 1.0),
+                    color=(0.9607, 0.8941, 0.8313),
+                    metallic=0.0,
+                    roughness=0.7,
+                    spacing=(dx, dy, dz),
+                ),
+            },
+            position=camera_position,
+            target=focal_point,
+            up=(0.0, -1.0, 0.0),
+            resolution=(1920, 1080),
+            background_color=(1.0, 1.0, 1.0),
+            lights=(Light(position=(0.0, -1.0, -1.0), intensity=5.0),),
+            output_dir=".",
+        )
+        scene.render(
+            {"density": rho, "wall": self.visualization_bc},
+            timestep=kwargs["timestep"],
+            filename=f"droplet_impact{kwargs['timestep']:07d}.png",
+        )
+
+        # HDF5/XDMF output option:
+        # from jax_lab.core.utils import save_fields_hdf5_xdmf
+        # fields = {"rho": np.array(rho)}
+        # static_fields = {"flag": np.array(self.visualization_bc)}
+        # save_fields_hdf5_xdmf(kwargs["timestep"], fields, "output", "data", static_fields=static_fields)
+
+
+class DropletOnWall3DGeometric(DropletOnWall3D):
+    def set_boundary_conditions(self):
+        # Only theta is used for geometric wetting scheme so other parameters (phi, delta_rho) do not need to be passed as they will be ignored.
+        walls = np.concatenate((self.bounding_box_indices["front"], self.bounding_box_indices["back"]))
+        walls = tuple(walls.T)
+        self.BCs[0].append(BounceBackHalfway(walls, self.grid_info, self.precision_policy, vel=None, theta=theta[walls]))
+
+        self.visualization_bc = jnp.zeros((self.nx, self.ny, self.nz), dtype=jnp.float32)
+        self.visualization_bc = self.visualization_bc.at[tuple(self.bounding_box_indices["back"].T)].set(1.0)
+
+
+if __name__ == "__main__":
+    s_rho = [1.0]
+    s_e = [0.5]
+    s_eta = [1.0]
+    s_j = [1.0]
+    s_q = [1.0]
+    s_m = [1.0]
+    s_pi = [1.0]
+    s_v = [1.0]
+
+    e = LatticeD3Q19().c.T
+    en = np.linalg.norm(e, axis=1)
+
+    M = np.zeros((19, 19))
+    M[0, :] = en**0
+    M[1, :] = 19 * en**2 - 30
+    M[2, :] = (21 * en**4 - 53 * en**2 + 24) / 2
+    M[3, :] = e[:, 0]
+    M[4, :] = (5 * en**2 - 9) * e[:, 0]
+    M[5, :] = e[:, 1]
+    M[6, :] = (5 * en**2 - 9) * e[:, 1]
+    M[7, :] = e[:, 2]
+    M[8, :] = (5 * en**2 - 9) * e[:, 2]
+    M[9, :] = 3 * e[:, 0] ** 2 - en**2
+    M[10, :] = (3 * en**2 - 5) * (3 * e[:, 0] ** 2 - en**2)
+    M[11, :] = e[:, 1] ** 2 - e[:, 2] ** 2
+    M[12, :] = (3 * en**2 - 5) * (e[:, 1] ** 2 - e[:, 2] ** 2)
+    M[13, :] = e[:, 0] * e[:, 1]
+    M[14, :] = e[:, 1] * e[:, 2]
+    M[15, :] = e[:, 0] * e[:, 2]
+    M[16, :] = (e[:, 1] ** 2 - e[:, 2] ** 2) * e[:, 0]
+    M[17, :] = (e[:, 2] ** 2 - e[:, 0] ** 2) * e[:, 1]
+    M[18, :] = (e[:, 0] ** 2 - e[:, 1] ** 2) * e[:, 2]
+
+    r = 30
+    width = 4
+    nx = 400
+    ny = 200
+    nz = 200
+
+    a = 3 / 49
+    b = 2 / 21
+    R = 1.0
+    pr_omega = 0.344
+
+    rho_l = 8.425313934
+    rho_g = 0.025644451
+    Tc = 0.1093785558
+    T = 0.7 * Tc
+
+    kwargs = {"a": a, "b": b, "R": R, "pr_omega": pr_omega, "T": T}
+    eos = PengRobinson(**kwargs)
+
+    theta = (12 * np.pi / 180) * np.ones((nx, ny, nz, 1))
+    phi = 1.05 * np.ones((nx, ny, nz, 1))
+    delta_rho = np.zeros((nx, ny, nz, 1))
+
+    precision = "f32/f32"
+    kwargs = {
+        "n_components": 1,
+        "lattice": LatticeD3Q19(precision),
+        "nx": nx,
+        "ny": ny,
+        "nz": nz,
+        "g_kkprime": -1.0 * np.ones((1, 1)),
+        "EOS": eos,
+        "body_force": [0.0, 1e-5, 0.0],
+        "lambda_": [0.05**0.5],  # k = lambda_**2 = 0.05
+        "s_rho": s_rho,
+        "s_e": s_e,
+        "s_eta": s_eta,
+        "s_j": s_j,
+        "s_q": s_q,
+        "s_pi": s_pi,
+        "s_m": s_m,
+        "s_v": [1.0],
+        "M": [M],
+        "kappa": [0.0],
+        "wetting_formulation": "improved_virtual_density",
+        "precision": precision,
+        "io_rate": 100,
+        "compute_MLUPS": False,
+        "print_info_rate": 100,
+        "checkpoint_rate": -1,
+        "checkpoint_dir": os.path.abspath("./checkpoints_"),
+        "restore_checkpoint": False,
+    }
+
+    subprocess.run("rm -rf output*/ *.vtk droplet*", shell=True, check=True)
+    sim = DropletOnWall3D(**kwargs)
+    sim.run(10000)

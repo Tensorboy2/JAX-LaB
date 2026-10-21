@@ -11,9 +11,9 @@ from jax.tree_util import tree_map
 from scipy import ndimage
 
 from jax_lab.core.boundary_conditions import BounceBack
-from jax_lab.core.eos import VanderWaals
+from jax_lab.core.shanchen.eos import VanderWaals
 from jax_lab.core.lattice import LatticeD3Q19
-from jax_lab.core.multiphase import MultiphaseMRT
+from jax_lab.core.shanchen.multiphase import MultiphaseMRT
 from jax_lab.render import Light, Scene, SurfaceRendering, VolumeRendering
 from jax_lab.render.render_utils import smooth_scalar_field
 

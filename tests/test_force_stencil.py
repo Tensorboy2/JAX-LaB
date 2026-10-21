@@ -2,9 +2,9 @@
 
 import numpy as np
 
-from jax_lab.core.eos import VanderWaals
+from jax_lab.core.shanchen.eos import VanderWaals
 from jax_lab.core.lattice import LatticeD2Q9, LatticeD3Q19
-from jax_lab.core.multiphase import MultiphaseBGK
+from jax_lab.core.shanchen.multiphase import MultiphaseBGK
 
 DOMAIN_3D = (12, 12, 12)
 DOMAIN_2D = (16, 16, 0)

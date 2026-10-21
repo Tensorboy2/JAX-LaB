@@ -4,10 +4,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from jax_lab.core.boundary_conditions import BounceBack
-from jax_lab.core.eos import VanderWaals
+from jax_lab.core.shanchen.eos import VanderWaals
 from jax_lab.core.lattice import LatticeD3Q19
 from jax_lab.core.models import BGKSim
-from jax_lab.core.multiphase import MultiphaseBGK
+from jax_lab.core.shanchen.multiphase import MultiphaseBGK
 
 DOMAIN = (32, 16, 16)
 PRECISION = "f32/f32"

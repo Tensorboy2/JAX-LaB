@@ -10,9 +10,9 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 
-from jax_lab.core.eos import VanderWaals
+from jax_lab.core.shanchen.eos import VanderWaals
 from jax_lab.core.lattice import LatticeD3Q19
-from jax_lab.core.multiphase import MultiphaseMRT
+from jax_lab.core.shanchen.multiphase import MultiphaseMRT
 
 DOMAIN = (10, 10, 10)
 PRECISION = "f64/f64"

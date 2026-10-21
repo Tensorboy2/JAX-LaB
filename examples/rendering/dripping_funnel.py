@@ -13,9 +13,9 @@ from jax.tree import map as tree_map
 from scipy.ndimage import gaussian_filter
 
 from jax_lab.core.boundary_conditions import BounceBack, ExactNonEquilibriumExtrapolation
-from jax_lab.core.eos import PengRobinson
+from jax_lab.core.shanchen.eos import PengRobinson
 from jax_lab.core.lattice import LatticeD3Q19
-from jax_lab.core.multiphase import MultiphaseMRT
+from jax_lab.core.shanchen.multiphase import MultiphaseMRT
 from jax_lab.render import Light, Scene, SurfaceRendering
 
 import logging

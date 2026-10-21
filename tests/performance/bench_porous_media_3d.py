@@ -23,9 +23,9 @@ import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 
 from jax_lab.core.boundary_conditions import BounceBack, ExactNonEquilibriumExtrapolation  # noqa: E402
-from jax_lab.core.eos import PengRobinson  # noqa: E402
+from jax_lab.core.shanchen.eos import PengRobinson  # noqa: E402
 from jax_lab.core.lattice import LatticeD3Q19  # noqa: E402
-from jax_lab.core.multiphase import MultiphaseMRT  # noqa: E402
+from jax_lab.core.shanchen.multiphase import MultiphaseMRT  # noqa: E402
 
 RHO_L = 6.499210784
 RHO_G = 0.379598891

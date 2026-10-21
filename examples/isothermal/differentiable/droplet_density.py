@@ -8,9 +8,9 @@ import numpy as np
 import optax
 from jax import config, debug, jit, lax, nn, random
 
-from jax_lab.core.eos import VanderWaals
+from jax_lab.core.shanchen.eos import VanderWaals
 from jax_lab.core.lattice import LatticeD2Q9
-from jax_lab.core.multiphase import MultiphaseBGK
+from jax_lab.core.shanchen.multiphase import MultiphaseBGK
 from jax_lab.core.utils import save_fields_vtk
 
 import logging

@@ -10,9 +10,9 @@ import jax.numpy as jnp
 import numpy as np
 
 from jax_lab.core.boundary_conditions import BounceBack
-from jax_lab.core.eos import VanderWaals
+from jax_lab.core.shanchen.eos import VanderWaals
 from jax_lab.core.lattice import LatticeD3Q19
-from jax_lab.core.multiphase import MultiphaseMRT
+from jax_lab.core.shanchen.multiphase import MultiphaseMRT
 from jax_lab.render import Light, Scene, SurfaceRendering
 
 import logging

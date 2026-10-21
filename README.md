@@ -11,8 +11,8 @@ A Python-based, differentiable, massively parallel lattice Boltzmann library for
 
 
 <p float="left" align="center">
-  <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/drainage.gif" alt="Evaporation in Fontainebleau sandstone" hspace=20 height=224 width="360"/>
-  <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/droplet_impact.gif" alt="Drainage through a porous geometry" width="360"/>
+  <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/drainage.gif" alt="Drainage in Fontainebleau sandstone" hspace=20 height=224 width="360"/>
+  <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/droplet_impact.gif" alt="Droplet impact on liquid film" width="360"/>
 </p>
 
 ## Key Features
@@ -152,11 +152,15 @@ python3 examples/isothermal/singlephase/cavity2d.py
 ```
 
 Solver components live under `jax_lab.core`, while the JAX-native rendering API
-lives under `jax_lab.render`. For example:
+lives under `jax_lab.render`. Shan-Chen (pseudopotential) multiphase models, their
+equations of state, and the multiphase thermal coupling live under
+`jax_lab.core.shanchen` (examples in `examples/*/multiphase/shanchen/`). For example:
 
 ```python
 from jax_lab.core.lattice import LatticeD2Q9
 from jax_lab.core.models import BGKSim
+from jax_lab.core.shanchen.eos import PengRobinson
+from jax_lab.core.shanchen.multiphase import MultiphaseMRT
 from jax_lab.render import Scene, SurfaceRendering
 ```
 

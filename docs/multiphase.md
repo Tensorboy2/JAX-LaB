@@ -1,7 +1,7 @@
-::: jax_lab.core.multiphase.Multiphase
+::: jax_lab.core.shanchen.multiphase.Multiphase
 
-::: jax_lab.core.multiphase.MultiphaseBGK
+::: jax_lab.core.shanchen.multiphase.MultiphaseBGK
 
-::: jax_lab.core.multiphase.MultiphaseMRT
+::: jax_lab.core.shanchen.multiphase.MultiphaseMRT
 
-::: jax_lab.core.multiphase.MultiphaseCascade
+::: jax_lab.core.shanchen.multiphase.MultiphaseCascade

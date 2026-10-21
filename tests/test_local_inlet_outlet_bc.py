@@ -7,10 +7,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from jax_lab.core.boundary_conditions import EquilibriumBC, Regularized, ZouHe
-from jax_lab.core.eos import VanderWaals
+from jax_lab.core.shanchen.eos import VanderWaals
 from jax_lab.core.lattice import LatticeD2Q9
 from jax_lab.core.models import BGKSim
-from jax_lab.core.multiphase import MultiphaseBGK
+from jax_lab.core.shanchen.multiphase import MultiphaseBGK
 
 DOMAIN = (24, 24, 0)
 PRECISION = "f32/f32"

@@ -9,7 +9,7 @@ from .pallas_kernels import (
     create_bounce_back_mask,
 )
 from .pallas_sim import PallasBGK, PallasMRT
-from .pallas_multiphase_sim import PallasMultiphaseBGK, PallasMultiphaseMRT
+from .shanchen import PallasMultiphaseBGK, PallasMultiphaseMRT
 
 __all__ = [
     "build_fused_bgk",

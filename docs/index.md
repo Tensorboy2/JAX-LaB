@@ -25,7 +25,7 @@ single-phase simulation.
 ## Choose an example
 
 - Start with `examples/isothermal/singlephase/` for single-phase flows.
-- Use `examples/isothermal/multiphase/` for multiphase and multicomponent flows.
+- Use `examples/isothermal/multiphase/shanchen/` for Shan-Chen (pseudopotential) multiphase and multicomponent flows.
 - Use `examples/thermal/` for coupled fluid-temperature simulations.
 - Use `examples/isothermal/differentiable/` for inverse and differentiable workflows.
 - Use `examples/rendering/` for simulations with JAX-native in-situ rendering.

@@ -8,7 +8,7 @@ import numpy as np
 
 from jax_lab.core.lattice import LatticeD3Q19
 
-from jax_lab.core.multiphase import MultiphaseBGK
+from jax_lab.core.shanchen.multiphase import MultiphaseBGK
 from jax_lab.core.boundary_conditions import BounceBack, Regularized
 
 from functools import partial

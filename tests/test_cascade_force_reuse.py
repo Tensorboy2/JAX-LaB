@@ -4,9 +4,9 @@ import jax.numpy as jnp
 import numpy as np
 from jax.tree import map as tree_map
 
-from jax_lab.core.eos import VanderWaals
+from jax_lab.core.shanchen.eos import VanderWaals
 from jax_lab.core.lattice import LatticeD2Q9
-from jax_lab.core.multiphase import MultiphaseCascade
+from jax_lab.core.shanchen.multiphase import MultiphaseCascade
 
 DOMAIN = (12, 10)
 PRECISION = "f32/f32"

@@ -10,7 +10,7 @@ import pytest
 
 from jax_lab.core.lattice import LatticeD2Q9, LatticeD3Q19
 from jax_lab.core.models import BGKSim
-from jax_lab.core.multiphase import MultiphaseBGK
+from jax_lab.core.shanchen.multiphase import MultiphaseBGK
 
 
 SINGLE_PHASE_PRECISION_CASES = (
