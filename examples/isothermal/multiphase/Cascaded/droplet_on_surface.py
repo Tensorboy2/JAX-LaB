@@ -59,8 +59,7 @@ class DropletOnWall(MultiphaseCascade):
         rho = self.precision_policy.cast_to_output(rho)
         rho_tree = [rho]
 
-        u = np.zeros((self.nx, self.ny, self.nz, 3))
-        u = self.distributed_array_init((self.nx, self.ny, 1), self.precision_policy.compute_dtype, init_val=u)
+        u = self.distributed_array_init((self.nx, self.ny, self.nz, 3), self.precision_policy.compute_dtype)
         u = self.precision_policy.cast_to_output(u)
         u_tree = [u]
         return rho_tree, u_tree
@@ -241,10 +240,9 @@ if __name__ == "__main__":
 
     # Circular wall
     R = 60
-    x = np.linspace(0, nx - 1, nx)
-    y = np.linspace(0, ny - 1, ny)
-    z = np.linspace(0, nz - 1, nz)
-    x, y, z = np.meshgrid(x, y, z)
+    x = np.arange(nx, dtype=np.float32)[:, None, None]
+    y = np.arange(ny, dtype=np.float32)[None, :, None]
+    z = np.arange(nz, dtype=np.float32)[None, None, :]
     sphere = (x - nx / 2) ** 2 + (y - ny / 2) ** 2 + (z - nz / 2 + 40) ** 2 - R**2
     ind = np.array(np.where(sphere <= 0), dtype=int).T
 

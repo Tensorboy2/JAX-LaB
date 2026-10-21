@@ -80,10 +80,9 @@ class EvaporatingDroplet(MultiphaseMRT):
         super().__init__(**kwargs)
 
     def initialize_macroscopic_fields(self):
-        x = np.linspace(0, self.nx - 1, self.nx, dtype=int)
-        y = np.linspace(0, self.ny - 1, self.ny, dtype=int)
-        z = np.linspace(0, self.nz - 1, self.nz, dtype=int)
-        x, y, z = np.meshgrid(x, y, z, indexing="ij")
+        x = np.arange(self.nx)[:, None, None]
+        y = np.arange(self.ny)[None, :, None]
+        z = np.arange(self.nz)[None, None, :]
 
         center_x = 0.5 * (self.nx - 1)
         center_y = 0.5 * (self.ny - 1)
@@ -97,8 +96,7 @@ class EvaporatingDroplet(MultiphaseMRT):
         rho = self.distributed_array_init((self.nx, self.ny, self.nz, 1), self.precision_policy.compute_dtype, init_val=rho)
         rho_tree = [self.precision_policy.cast_to_output(rho)]
 
-        u = np.zeros((self.nx, self.ny, self.nz, 3))
-        u = self.distributed_array_init((self.nx, self.ny, self.nz, 3), self.precision_policy.compute_dtype, init_val=u)
+        u = self.distributed_array_init((self.nx, self.ny, self.nz, 3), self.precision_policy.compute_dtype)
         u_tree = [self.precision_policy.cast_to_output(u)]
         return rho_tree, u_tree
 
@@ -115,10 +113,9 @@ class DropletThermal(MultiphaseThermal):
         self.history = []
 
     def initialize_temperature_field(self):
-        x = np.linspace(0, self.nx - 1, self.nx, dtype=int)
-        y = np.linspace(0, self.ny - 1, self.ny, dtype=int)
-        z = np.linspace(0, self.nz - 1, self.nz, dtype=int)
-        x, y, z = np.meshgrid(x, y, z, indexing="ij")
+        x = np.arange(self.nx)[:, None, None]
+        y = np.arange(self.ny)[None, :, None]
+        z = np.arange(self.nz)[None, None, :]
 
         center_x = 0.5 * (self.nx - 1)
         center_y = 0.5 * (self.ny - 1)

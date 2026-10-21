@@ -9,32 +9,11 @@
 
 A Python-based, differentiable, massively parallel lattice Boltzmann library for modeling multiphase and multiphysics flows & physics-based machine learning
 
-<table width="100%" cellspacing="0" cellpadding="0">
-  <tr>
-    <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/3D_evaporation_fontainebleau.gif" alt="Evaporation in Fontainebleau sandstone" width="105%">
-      <br>
-      Evaporation in Fontainebleau sandstone.
-    </td>
-    <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/drainage.gif" alt="Drainage through a porous geometry" width="105%">
-      <br>
-      Drainage through a beadpack geometry.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/contact_angle_hysteresis.gif" alt="Droplet impingement on an inclined surface" width="105%">
-      <br>
-      Droplet impingement on an inclined surface.
-    </td>
-   <td width="50%" align="center"> 
-     <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/pool_boiling_3D.gif" alt="Two-dimensional pool boiling" width="105%">
-     <br>
-     Three-dimensional pool boiling.
-   </td>
-  </tr>
-</table>
+
+<p float="left" align="center">
+  <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/drainage.gif" alt="Evaporation in Fontainebleau sandstone" hspace=20 height=224 width="360"/>
+  <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/droplet_impact.gif" alt="Drainage through a porous geometry" width="360"/>
+</p>
 
 ## Key Features
 - **JAX Ecosystem Integration:** Works with machine learning libraries such as [Equinox](https://github.com/patrick-kidger/equinox), [Flax](https://github.com/google/flax), [Haiku](https://github.com/deepmind/dm-haiku), and [Optax](https://github.com/google-deepmind/optax).
@@ -117,12 +96,7 @@ Computations use *pytrees* to **model any number of components**, each with its 
 - The API is experimental and requires SoA-compatible boundary conditions.
 - ~3x performance of base implementation, ~0.5x memory footprint.
 
-## Accompanying Paper
-
-The accompanying paper, published in Journal of Advances in Modeling Earth Systems (JAMES), is available [here](https://doi.org/10.1029/2025MS005313).
-
 ## Documentation
-
 Complete API documentation is available [here](https://piyush-ppradhan.github.io/JAX-LaB/), or you can build and preview it locally:
 ```bash
 pip install -e ".[docs]"
@@ -130,7 +104,6 @@ zensical serve
 ```
 
 ## Installation Guide
-
 JAX-LaB is distributed as the `jax-lab` package (import name `jax_lab`). The default install targets CPU:
 ```bash
 pip install jax-lab
@@ -147,7 +120,6 @@ pip install "jax-lab[rocm]"     # AMD GPU (ROCm, local toolkit)
 Use `cuda13-local`/`cuda12-local` instead if you manage the CUDA toolkit yourself.
 
 ### Optional I/O and visualization dependencies
-
 The I/O and visualization utilities load their dependencies lazily (at call time, not at import time), so the core solver runs without them. The following packages are only needed if you call the corresponding functions:
 
 | Package | Required by |
@@ -164,7 +136,6 @@ pip install "jax-lab[io]"
 Extras can be combined, e.g. `pip install "jax-lab[cuda13,io]"`.
 
 ### Development install
-
 To work on JAX-LaB itself or run the bundled examples, install from source in editable mode:
 ```bash
 git clone https://github.com/piyush-ppradhan/JAX-LaB

@@ -50,7 +50,7 @@ class Cylinder(KBCSim):
         wall = np.concatenate([self.bounding_box_indices["top"], self.bounding_box_indices["bottom"]])
         self.BCs.append(BounceBack(tuple(wall.T), self.grid_info, self.precision_policy))
 
-        coord = np.array([np.unravel_index(i, (self.nx, self.ny)) for i in range(self.nx * self.ny)])
+        coord = np.indices((self.nx, self.ny)).reshape(2, -1).T
         xx, yy = coord[:, 0], coord[:, 1]
         cx, cy = 2.0 * diam, 2.0 * diam
         cyl = ((xx) - cx) ** 2 + (yy - cy) ** 2 <= (diam / 2.0) ** 2

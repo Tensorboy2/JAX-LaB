@@ -31,13 +31,12 @@ class DropletOnWall3D(MultiphaseMRT):
     def initialize_macroscopic_fields(self):
         dist = np.sqrt((x - self.nx / 2) ** 2 + (y - self.ny / 2) ** 2 + (z - self.nz / 2 - 70) ** 2)
         rho = 0.5 * (rho_l + rho_g) - 0.5 * (rho_l - rho_g) * np.tanh(2 * (dist - r) / width)
-        rho = rho.reshape((nx, ny, nz, 1))
+        rho = rho[..., None]
         rho = self.distributed_array_init((self.nx, self.ny, self.nz, 1), self.precision_policy.compute_dtype, init_val=rho)
         rho = self.precision_policy.cast_to_output(rho)
         rho_tree = [rho]
 
-        u = np.zeros((self.nx, self.ny, self.nz, 3))
-        u = self.distributed_array_init((self.nx, self.ny, 1), self.precision_policy.compute_dtype, init_val=u)
+        u = self.distributed_array_init((self.nx, self.ny, self.nz, 3), self.precision_policy.compute_dtype)
         u = self.precision_policy.cast_to_output(u)
         u_tree = [u]
         return rho_tree, u_tree
@@ -81,10 +80,9 @@ if __name__ == "__main__":
 
     # Spherical wall
     R = 70
-    x = np.linspace(0, nx - 1, nx)
-    y = np.linspace(0, ny - 1, ny)
-    z = np.linspace(0, nz - 1, nz)
-    x, y, z = np.meshgrid(x, y, z)
+    x = np.arange(nx, dtype=np.float32)[:, None, None]
+    y = np.arange(ny, dtype=np.float32)[None, :, None]
+    z = np.arange(nz, dtype=np.float32)[None, None, :]
     sphere = (x - nx / 2) ** 2 + (y - ny / 2) ** 2 + (z - nz / 2 + 40) ** 2 - R**2
     ind = np.array(np.where(sphere <= 0), dtype=int)
     ind = tuple(ind)

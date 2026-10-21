@@ -393,10 +393,9 @@ if __name__ == "__main__":
     ny = 150
     nz = 150
 
-    x = np.linspace(0, nx - 1, nx, dtype=int)
-    y = np.linspace(0, ny - 1, ny, dtype=int)
-    z = np.linspace(0, nz - 1, nz, dtype=int)
-    x, y, z = np.meshgrid(x, y, z)
+    x = np.arange(nx, dtype=np.float32)[:, None, None]
+    y = np.arange(ny, dtype=np.float32)[None, :, None]
+    z = np.arange(nz, dtype=np.float32)[None, None, :]
 
     precision = "f32/f32"
     g_kkprime = -1 * np.ones((2, 2))
@@ -509,10 +508,10 @@ if __name__ == "__main__":
 
     # Setting contact angle
     theta_w = (np.pi / 2) * np.ones((nx, ny, nz, 1))
-    theta_w[ind] = np.pi / 6
+    theta_w[tuple(ind.T)] = np.pi / 6
     phi_w = np.ones((nx, ny, nz, 1))
     theta_c = (np.pi / 2) * np.ones((nx, ny, nz, 1))
-    phi_w[ind] = 1.17
+    phi_w[tuple(ind.T)] = 1.17
     phi_c = np.ones((nx, ny, nz, 1))
     delta_rho_w = np.zeros((nx, ny, nz, 1))
     delta_rho_c = np.zeros((nx, ny, nz, 1))

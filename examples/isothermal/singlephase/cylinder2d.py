@@ -51,7 +51,7 @@ class Cylinder(BGKSim):
 
     def set_boundary_conditions(self):
         # Define the cylinder surface
-        coord = np.array([(i, j) for i in range(self.nx) for j in range(self.ny)])
+        coord = np.indices((self.nx, self.ny)).reshape(2, -1).T
         xx, yy = coord[:, 0], coord[:, 1]
         cx, cy = 2.0 * diam, 2.0 * diam
         cylinder = (xx - cx) ** 2 + (yy - cy) ** 2 <= (diam / 2.0) ** 2

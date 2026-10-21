@@ -108,7 +108,7 @@ if __name__ == "__main__":
         for nx in resList:
             ny = nx
             twopi = 2.0 * np.pi
-            coord = np.array([(i, j) for i in range(nx) for j in range(ny)])
+            coord = np.indices((nx, ny)).reshape(2, -1).T
             xx, yy = coord[:, 0], coord[:, 1]
             kx, ky = twopi / nx, twopi / ny
             xx = xx.reshape((nx, ny)) * kx

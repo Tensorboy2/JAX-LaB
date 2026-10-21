@@ -33,27 +33,22 @@ logger = logging.getLogger(__name__)
 
 class DropletOnWall3D(MultiphaseMRT):
     def initialize_macroscopic_fields(self):
-        x = np.linspace(0, self.nx - 1, self.nx, dtype=int)
-        y = np.linspace(0, self.ny - 1, self.ny, dtype=int)
-        z = np.linspace(0, self.nz - 1, self.nz, dtype=int)
-        x, y, z = np.meshgrid(x, y, z)
-        x = np.transpose(x, axes=(1, 0, 2))
-        y = np.transpose(y, axes=(1, 0, 2))
-        z = np.transpose(z, axes=(1, 0, 2))
+        x = np.arange(self.nx, dtype=np.float32)[:, None, None]
+        y = np.arange(self.ny, dtype=np.float32)[None, :, None]
+        z = np.arange(self.nz, dtype=np.float32)[None, None, :]
 
         rho_tree = []
 
         dist = np.sqrt((x - self.nx / 2) ** 2 + (y - self.ny / 5) ** 2 + (z - self.nz / 2) ** 2)
 
-        rho = jnp.zeros((self.nx, self.ny, self.nz, 1), dtype=self.precision_policy.compute_dtype)
-        rho = rho.at[..., 0].set(0.5 * (rho_l + rho_g) - 0.5 * (rho_l - rho_g) * np.tanh(2 * (dist - r) / width))
+        rho = 0.5 * (rho_l + rho_g) - 0.5 * (rho_l - rho_g) * np.tanh(2 * (dist - r) / width)
+        rho = rho[..., None]
 
         rho = self.distributed_array_init((self.nx, self.ny, self.nz, 1), self.precision_policy.compute_dtype, init_val=rho)
         rho = self.precision_policy.cast_to_output(rho)
         rho_tree.append(rho)
 
-        u = jnp.zeros((self.nx, self.ny, self.nz, 3), dtype=self.precision_policy.compute_dtype)
-        u = self.distributed_array_init((self.nx, self.ny, self.nz, 3), self.precision_policy.compute_dtype, init_val=u)
+        u = self.distributed_array_init((self.nx, self.ny, self.nz, 3), self.precision_policy.compute_dtype)
         u = self.precision_policy.cast_to_output(u)
         u_tree = [u]
         return rho_tree, u_tree

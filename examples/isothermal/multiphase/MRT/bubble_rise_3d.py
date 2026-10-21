@@ -37,10 +37,9 @@ logger = logging.getLogger(__name__)
 
 class BubbleRise3D(MultiphaseMRT):
     def initialize_macroscopic_fields(self):
-        x = np.linspace(0, self.nx - 1, self.nx, dtype=int)
-        y = np.linspace(0, self.ny - 1, self.ny, dtype=int)
-        z = np.linspace(0, self.nz - 1, self.nz, dtype=int)
-        x, y, z = np.meshgrid(x, y, z, indexing="ij")
+        x = np.arange(self.nx, dtype=np.float32)[:, None, None]
+        y = np.arange(self.ny, dtype=np.float32)[None, :, None]
+        z = np.arange(self.nz, dtype=np.float32)[None, None, :]
 
         dist = np.sqrt((x - self.nx / 2) ** 2 + (y - self.ny / 2) ** 2 + (z - bubble_z_center) ** 2)
         # Vapor (rho_g) inside the bubble, liquid (rho_l) filling the rest of the column.
@@ -50,8 +49,7 @@ class BubbleRise3D(MultiphaseMRT):
         rho = self.precision_policy.cast_to_output(rho)
         rho_tree = [rho]
 
-        u = np.zeros((self.nx, self.ny, self.nz, 3))
-        u = self.distributed_array_init((self.nx, self.ny, self.nz, 3), self.precision_policy.compute_dtype, init_val=u)
+        u = self.distributed_array_init((self.nx, self.ny, self.nz, 3), self.precision_policy.compute_dtype)
         u = self.precision_policy.cast_to_output(u)
         u_tree = [u]
         return rho_tree, u_tree

@@ -30,11 +30,10 @@ class DropletContactAngleHysteresis3D(MultiphaseMRT):
     def initialize_macroscopic_fields(self):
         dist = np.sqrt((x - droplet_center[0]) ** 2 + (y - droplet_center[1]) ** 2 + (z - droplet_center[2]) ** 2)
         rho = 0.5 * (rho_l + rho_g) - 0.5 * (rho_l - rho_g) * np.tanh(2 * (dist - droplet_radius) / interface_width)
-        rho = rho.reshape((nx, ny, nz, 1))
+        rho = rho[..., None]
         rho = self.distributed_array_init((self.nx, self.ny, self.nz, 1), self.precision_policy.compute_dtype, init_val=rho)
         rho = self.precision_policy.cast_to_output(rho)
-        u = np.zeros((self.nx, self.ny, self.nz, 3))
-        u = self.distributed_array_init((self.nx, self.ny, self.nz, 3), self.precision_policy.compute_dtype, init_val=u)
+        u = self.distributed_array_init((self.nx, self.ny, self.nz, 3), self.precision_policy.compute_dtype)
         u = self.precision_policy.cast_to_output(u)
         return [rho], [u]
 
@@ -134,10 +133,9 @@ if __name__ == "__main__":
     interface_width = 4.0
     output_dir = "output_hysteresis"
 
-    x = np.arange(nx)
-    y = np.arange(ny)
-    z = np.arange(nz)
-    x, y, z = np.meshgrid(x, y, z, indexing="ij")
+    x = np.arange(nx, dtype=np.float32)[:, None, None]
+    y = np.arange(ny, dtype=np.float32)[None, :, None]
+    z = np.arange(nz, dtype=np.float32)[None, None, :]
     interior_mask = (
         (x >= buffer_layers)
         & (x < nx - buffer_layers)
@@ -150,8 +148,8 @@ if __name__ == "__main__":
     wall_normal = np.array([np.cos(wall_angle), 0.0, np.sin(wall_angle)], dtype=np.float64)
     downslope_tangent = np.array([np.sin(wall_angle), 0.0, -np.cos(wall_angle)], dtype=np.float64)
     wall_point = np.array([115.0, ny / 2, 155.0], dtype=np.float64)
-    plane_distance = wall_normal[0] * (x - wall_point[0]) + wall_normal[2] * (z - wall_point[2])
-    coordinates_tangent = downslope_tangent[0] * (x - wall_point[0]) + downslope_tangent[2] * (z - wall_point[2])
+    plane_distance = np.broadcast_to(wall_normal[0] * (x - wall_point[0]) + wall_normal[2] * (z - wall_point[2]), (nx, ny, nz))
+    coordinates_tangent = np.broadcast_to(downslope_tangent[0] * (x - wall_point[0]) + downslope_tangent[2] * (z - wall_point[2]), (nx, ny, nz))
     wall = (plane_distance <= 0.0) & (plane_distance > -wall_thickness) & interior_mask
     wall_indices = tuple(np.where(wall))
 
