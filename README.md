@@ -19,7 +19,7 @@ A Python-based, differentiable, massively parallel lattice Boltzmann library for
 - **JAX Ecosystem Integration:** Works with machine learning libraries such as [Equinox](https://github.com/patrick-kidger/equinox), [Flax](https://github.com/google/flax), [Haiku](https://github.com/deepmind/dm-haiku), and [Optax](https://github.com/google-deepmind/optax).
 - **Differentiable LBM:** Provides differentiable kernels for physics and deep learning applications.
 - **Scalable and Portable:** Runs on multi-core CPUs, GPUs, and TPUs, with distributed support for simulations spanning hundreds of GPUs and billions of cells.
-- **Broad LBM Support:** Includes several boundary conditions and collision kernels, along with Shan-Chen multiphase, multiphysics, and multicomponent flow modeling.
+- **Broad LBM Support:** Includes several boundary conditions and collision kernels, along with Shan-Chen and volume-of-fluid (VoF) multiphase, multiphysics, and multicomponent flow modeling.
 - **User-Friendly Python Interface:** Written entirely in Python, simplifying simulation setup and making library easy to extend.
 - **JAX Array and Shardmap:** Offers a NumPy-like interface while leaving performance optimization to the compiler.
 - **GPU-Optimized:** Per-shard boundary indices, scalar wetting/force stencils, and a fused symbolic MRT collision path reduce memory traffic and compiled kernel size.
@@ -154,18 +154,20 @@ python3 examples/isothermal/singlephase/cavity2d.py
 Solver components live under `jax_lab.core`, while the JAX-native rendering API
 lives under `jax_lab.render`. Shan-Chen (pseudopotential) multiphase models, their
 equations of state, and the multiphase thermal coupling live under
-`jax_lab.core.shanchen` (examples in `examples/*/multiphase/shanchen/`). For example:
+`jax_lab.core.shanchen` (examples in `examples/*/multiphase/shanchen/`). The volume-of-fluid (VoF) two-phase model, with sharp
+interfaces, large density and viscosity contrasts and optional evaporation, lives under `jax_lab.core.vof`
+(examples in `examples/isothermal/multiphase/vof/`). For example:
 
 ```python
 from jax_lab.core.lattice import LatticeD2Q9
 from jax_lab.core.models import BGKSim
 from jax_lab.core.shanchen.eos import PengRobinson
 from jax_lab.core.shanchen.multiphase import MultiphaseMRT
+from jax_lab.core.vof import VoFMRT, VoFOpenBoundary
 from jax_lab.render import Scene, SurfaceRendering
 ```
 
 ## Citation
-If you use this software, please cite it as follows:
 ```bibtex
 @article{pradhan_jax-lab_2026,
     title = {{JAX}-{LaB}: {A} {High}-{Performance}, {Differentiable} {Lattice} {Boltzmann} {Library} for {Modeling} {Multiphase} {Fluid} {Dynamics} in {Geosciences} and {Engineering}},

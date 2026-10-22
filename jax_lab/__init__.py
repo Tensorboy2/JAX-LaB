@@ -37,6 +37,10 @@ from .core import (
     Thermal,
     Unit,
     VanderWaals,
+    VoF,
+    VoFBGK,
+    VoFMRT,
+    VoFOpenBoundary,
 )
 
 __all__ = [
@@ -66,4 +70,8 @@ __all__ = [
     "Precision",
     "PrecisionPolicy",
     "Unit",
+    "VoF",
+    "VoFBGK",
+    "VoFMRT",
+    "VoFOpenBoundary",
 ]

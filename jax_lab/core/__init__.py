@@ -19,6 +19,7 @@ from .shanchen import (
 )
 from .thermal import Thermal
 from .unit import Unit
+from .vof import VoF, VoFBGK, VoFMRT, VoFOpenBoundary
 
 __all__ = [
     "AdvectionDiffusionBGK",
@@ -46,4 +47,8 @@ __all__ = [
     "Thermal",
     "Unit",
     "VanderWaals",
+    "VoF",
+    "VoFBGK",
+    "VoFMRT",
+    "VoFOpenBoundary",
 ]
