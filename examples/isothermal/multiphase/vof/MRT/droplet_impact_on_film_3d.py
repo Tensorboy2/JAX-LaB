@@ -3,10 +3,10 @@ Impact of a water droplet on a thin water film in air, under gravity. The drople
 h = 0.2 D resting on a no-slip wall and forms a crown whose rim develops a Rayleigh-Taylor (fingering) instability. The dimensionless groups
 are
 
-    Re = U D / nu_l = 1000, We = rho_l U^2 D / sigma = 1000, Fr = U / sqrt(g D) = 36.44, Ca = mu_l U / sigma = We / Re = 1,
+    Re = U D / nu_l = 10000, We = rho_l U^2 D / sigma = 1000, Fr = U / sqrt(g D) = 36.44, Ca = mu_l U / sigma = We / Re = 0.1,
     Bo = rho_l g D^2 / sigma = We / Fr^2 = 0.753,
 
-so that the splashing parameter We^0.8 Re^0.4 (about 4000) is well above the crown-splash threshold of about 2100. The air-water density
+so that the splashing parameter We^0.8 Re^0.4 (about 10000) is well above the crown-splash threshold of about 2100. The air-water density
 ratio is 1 : 1000 and the kinematic viscosity ratio 15 : 1. The droplet starts just above the film.
 """
 
@@ -61,7 +61,7 @@ class DropletImpact(VoFMRT):
 if __name__ == "__main__":
     precision = "f32/f32"
 
-    Re, We, Fr = 1000.0, 1000.0, 36.44
+    Re, We, Fr = 10000.0, 1000.0, 36.44
     D = 56
     U = 0.1
     nu_l = U * D / Re
