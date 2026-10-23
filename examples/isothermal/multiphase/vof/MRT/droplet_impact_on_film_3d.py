@@ -54,7 +54,13 @@ class DropletImpact(VoFMRT):
         logger.info(
             f"Timestep {timestep} (t U / D = {timestep * U / D:.2f}): liquid volume = {eps.sum():.0f}, max |u| / U = {np.abs(u).max() / U:.2f}"
         )
-        fields = {"volume_fraction": eps, "p": kwargs["p"][0, ..., 0], "ux": u[..., 0], "uy": u[..., 1], "uz": u[..., 2]}
+        fields = {
+            "volume_fraction": eps,
+            # "p": kwargs["p"][0, ..., 0],
+            # "ux": u[..., 0],
+            # "uy": u[..., 1],
+            # "uz": u[..., 2],
+        }
         save_fields_hdf5_xdmf(timestep, fields, output_dir, prefix="impact")
 
 
@@ -121,7 +127,7 @@ if __name__ == "__main__":
         "density_ratio": density_ratio,
         "surface_tension": sigma,
         "body_force": [0.0, 0.0, -g],
-        "io_rate": 200,
+        "io_rate": 50,
         "print_info_rate": 200,
     }
     sim = DropletImpact(**kwargs)

@@ -7,13 +7,7 @@
 </h4>
 </div>
 
-A Python-based, differentiable, massively parallel lattice Boltzmann library for modeling multiphase and multiphysics flows & physics-based machine learning
-
-
-<p float="left" align="center">
-  <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/drainage.gif" alt="Drainage in Fontainebleau sandstone" hspace=20 height=224 width="360"/>
-  <img src="https://raw.githubusercontent.com/piyush-ppradhan/JAX-LaB/multiphase/assets/droplet_impact.gif" alt="Droplet impact on liquid film" width="360"/>
-</p>
+A Python-based, differentiable, massively parallel lattice Boltzmann library for modeling multiphase and multiphysics flows & physics-based machine learning.
 
 ## Key Features
 - **JAX Ecosystem Integration:** Works with machine learning libraries such as [Equinox](https://github.com/patrick-kidger/equinox), [Flax](https://github.com/google/flax), [Haiku](https://github.com/deepmind/dm-haiku), and [Optax](https://github.com/google-deepmind/optax).
@@ -27,7 +21,7 @@ A Python-based, differentiable, massively parallel lattice Boltzmann library for
 
 ## Capabilities
 ### Multiphase Flow Modeling
-**Shan-Chen** pseudopotential method with various modifications:
+### 1. Shan-Chen
 - Support for **high density ratio flows** (tested for density ratios > 10<sup>10</sup>) using 4th-order isotropic explicit finite difference (EFM) method for gradient computation.
 - Incorporates **Equation of State (EOS)** to model multiphase flows. Currently implemented EOS include **Carnahan-Starling**, **Peng-Robinson**, **Redlich-Kwong**, **Redlich-Kwong-Soave**
 and **VanderWaals**.
@@ -36,14 +30,18 @@ and **VanderWaals**.
 ### Multicomponent Flow Support
 Computations use *pytrees* to **model any number of components**, each with its own equation of state, initial condition, and boundary conditions, without requiring library modifications.
 
-### Thermal Flow Modeling
-- **Hybrid thermal LBM solver** for two- and three-dimensional **single-phase, multiphase, and multicomponent** flows.
-- Thermal equation is solved using lattice-based finite-difference stencils and **fourth-order Runge-Kutta** time integration.
-
 ### Wetting model
 - [Geometric wetting scheme](https://journals.aps.org/pre/abstract/10.1103/PhysRevE.87.013301)
 - [Improved virtual density scheme](https://journals.aps.org/pre/abstract/10.1103/PhysRevE.100.053313)
 
+### 2. Thermal Flow
+- **Hybrid thermal LBM solver** for two- and three-dimensional **single-phase, multiphase, and multicomponent** flows.
+- Thermal equation is solved using lattice-based finite-difference stencils and **fourth-order Runge-Kutta** time integration.
+
+### 3. Volume of Fluid (VoF)
+- **Two-lattice free-surface LBM** (Mohammadrezaei et al., 2026): liquid and gas each evolve on their own lattice and are coupled only at interface cells, enabling **physical density ratios** (e.g., air-water 1:1000) with a sharp interface.
+- **Surface tension** from the interface curvature, **contact angles** at walls, and an optional **viscous normal-stress jump**.
+- **BGK** and **MRT** collision on **D2Q9** and **D3Q19**; interface work runs only on a compacted band of interface cells, so its cost scales with interface size.
 
 ### Collision Models
 - **BGK**
