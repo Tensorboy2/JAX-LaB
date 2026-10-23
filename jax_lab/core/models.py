@@ -94,7 +94,7 @@ class KBCSim(LBMBase):
         tiny = 1e-32
         beta = self.omega * 0.5
         rho, u = self.update_macroscopic(f)
-        feq = self.equilibrium(rho, u, castOutput=False)
+        feq = self.equilibrium(rho, u, cast_output=False)
 
         # Alternative KBC: only stabalizes for voxels whose entropy decreases after BGK collision.
         f_bgk = f - self.omega * (f - feq)
@@ -1366,5 +1366,5 @@ class CLBMSim(LBMBase):
         Tout = jnp.dot(Tdash, jnp.eye(self.lattice.q) - self.S) + jnp.dot(Tdash_eq, self.S)
         Tout = self.apply_force(Tout, rho, u)
         Tout = self.compute_central_moment_inverse(Tout, u)
-        fout = jnp.dot(T, self.M_inv)
+        fout = jnp.dot(Tout, self.M_inv)
         return self.precision_policy.cast_to_output(fout)
