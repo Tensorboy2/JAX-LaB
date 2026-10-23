@@ -88,12 +88,6 @@ Computations use *pytrees* to **model any number of components**, each with its 
 - **Dirichlet:** Prescribes temperature at the boundary.
 - **Neumann:** Prescribes the normal temperature gradient.
 
-### Experimental Pallas backend
-- `jax_lab.experimental` provides GPU-optimized, structure-of-arrays (SoA) Pallas kernels for single- and multiphase LBM. 
-- It supports multiple lattices, precision policies, boundary conditions, and multi-GPU execution. 
-- The API is experimental and requires SoA-compatible boundary conditions.
-- ~3x performance of base implementation, ~0.5x memory footprint.
-
 ## Documentation
 Complete API documentation is available [here](https://piyush-ppradhan.github.io/JAX-LaB/), or you can build and preview it locally:
 ```bash
@@ -148,23 +142,6 @@ Run an example:
 ```bash
 python3 examples/isothermal/singlephase/cavity2d.py
 ```
-
-Solver components live under `jax_lab.core`, while the JAX-native rendering API
-lives under `jax_lab.render`. Shan-Chen (pseudopotential) multiphase models, their
-equations of state, and the multiphase thermal coupling live under
-`jax_lab.core.shanchen` (examples in `examples/*/multiphase/shanchen/`). The volume-of-fluid (VoF) two-phase model, with sharp
-interfaces, large density and viscosity contrasts and optional evaporation, lives under `jax_lab.core.vof`
-(examples in `examples/isothermal/multiphase/vof/`). For example:
-
-```python
-from jax_lab.core.lattice import LatticeD2Q9
-from jax_lab.core.models import BGKSim
-from jax_lab.core.shanchen.eos import PengRobinson
-from jax_lab.core.shanchen.multiphase import MultiphaseMRT
-from jax_lab.core.vof import VoFMRT, VoFOpenBoundary
-from jax_lab.render import Scene, SurfaceRendering
-```
-
 ## Citation
 ```bibtex
 @article{pradhan_jax-lab_2026,
