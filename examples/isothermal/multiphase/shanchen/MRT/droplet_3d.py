@@ -166,7 +166,7 @@ if __name__ == "__main__":
     M[18, :] = ey**2 * ez**2
 
     r = 40
-    width = 4
+    width = 2
     nx = 200
     ny = 200
     nz = 200
@@ -192,7 +192,7 @@ if __name__ == "__main__":
         "nz": nz,
         "g_kkprime": -1.0 * np.ones((1, 1)),
         "EOS": eos,
-        "lambda_": [0.5],
+        "lambda_": [0.191],
         "s_rho": [s_0],
         "s_e": [s_b],
         "s_eta": [s_b],
