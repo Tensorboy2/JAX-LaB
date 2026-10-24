@@ -1398,7 +1398,7 @@ class Multiphase(LBMBase):
         # Accumulate the indices of all BCs to create the grid mask with FALSE along directions that
         # stream into a boundary voxel.
         for i in range(self.n_components):
-            logger.info(f"Component: {i + 1}")
+            logger.info(f"Component: {i}")
             solid_halo_list = [np.array(bc.indices).T for bc in self.BCs[i] if bc.is_solid]
             solid_halo_voxels = np.unique(np.vstack(solid_halo_list), axis=0) if solid_halo_list else None
 
@@ -3211,7 +3211,7 @@ class MultiphaseMRT(Multiphase):
             matrix = np.asarray(matrix, dtype=np.float64)
             if has_surface_tension and not all(np.allclose(matrix[k], row) for k, row in expected.items()):
                 warnings.warn(
-                    f"Component {component}: kappa != 0 with an MRT matrix whose rows {sorted(expected)} are not the orthogonal "
+                    f"\nComponent {component}: kappa != 0 with an MRT matrix whose rows {sorted(expected)} are not the orthogonal "
                     "basis the surface-tension source is defined in; the adjustment will not follow sigma ~ (1 - kappa). "
                     "Use the orthogonal basis (see pool_boiling_3d.py) or override adjust_surface_tension.",
                     stacklevel=3,
