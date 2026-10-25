@@ -1477,6 +1477,8 @@ class VoF(LBMBase):
                 if verified is not previous_result:
                     inputs, capacity = verified, self._next_capacity
                     result = self._speculative_step(*inputs, timestep, capacity)
+                # Drop the previous step's buffers so they are not held through the next step
+                del previous_inputs, previous_result, verified
             pending = ((*inputs, timestep, capacity), result)
             f_tree, state = result
             if io_flag or checkpoint_flag or timestep == t_max:
