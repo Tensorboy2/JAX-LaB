@@ -62,6 +62,9 @@ class Multiphase(LBMBase):
 
     g_kkprime (numpy.ndarray): Symmetric component-interaction matrix with shape (n_components, n_components).
 
+    force_periodic_axes (iterable of int, optional): Axes that wrap when computing force stencils. Defaults to all
+        axes. Specify only periodic axes for domains with open boundaries.
+
     wetting_formulation (str or None, optional): Contact-angle scheme. Select "geometric" or
     "improved_virtual_density" when a boundary condition defines theta. Defaults to None.
 
@@ -89,6 +92,13 @@ class Multiphase(LBMBase):
     def __init__(self, **kwargs):
         self.n_components = kwargs.get("n_components")
         super().__init__(**kwargs)
+        self.force_periodic_axes = tuple(kwargs.get("force_periodic_axes", range(self.dim)))
+        if (
+            len(set(self.force_periodic_axes)) != len(self.force_periodic_axes)
+            or any(not isinstance(axis, int) or isinstance(axis, bool) or axis not in range(self.dim) for axis in self.force_periodic_axes)
+        ):
+            raise ValueError(f"force_periodic_axes must contain unique integer axes from 0 to {self.dim - 1}.")
+        self._force_nonperiodic_axes = tuple(axis for axis in range(self.dim) if axis not in self.force_periodic_axes)
         self.k = kwargs.get("k")
         self.A = kwargs.get("A")
         self.eos = kwargs.get("EOS", None)
@@ -1250,11 +1260,42 @@ class Multiphase(LBMBase):
             solid_mask.append(mask)
         return solid_mask
 
+    def _force_x_shifts(self, field):
+        """Build the x-neighbor fields with one halo exchange per direction."""
+        x_shifted = {0: field}
+        for x_shift in (1, -1):
+            shifted = jnp.roll(field, x_shift, axis=0)
+            if x_shift == 1:
+                neighbor = self.send_right(field[-1:], "x")
+                if 0 in self._force_nonperiodic_axes:
+                    neighbor = jnp.where(jax.lax.axis_index("x") == 0, field[:1], neighbor)
+                x_shifted[1] = shifted.at[:1].set(neighbor)
+            else:
+                neighbor = self.send_left(field[:1], "x")
+                if 0 in self._force_nonperiodic_axes:
+                    neighbor = jnp.where(jax.lax.axis_index("x") == self.n_devices - 1, field[-1:], neighbor)
+                x_shifted[-1] = shifted.at[-1:].set(neighbor)
+        return x_shifted
+
+    def _force_neighbor(self, x_shifted, direction):
+        """Shift an x-neighbor field along remaining axes, clamping configured open boundaries."""
+        direction = tuple(int(component) for component in direction)
+        base = x_shifted[direction[0]]
+        for axis, shift in enumerate(direction[1:], start=1):
+            if shift == 0:
+                continue
+            previous = base
+            base = jnp.roll(base, shift, axis=axis)
+            if axis in self._force_nonperiodic_axes:
+                edge_index = [slice(None)] * base.ndim
+                edge_index[axis] = 0 if shift > 0 else -1
+                base = base.at[tuple(edge_index)].set(previous[tuple(edge_index)])
+        return base
+
     def _neighbor_stencil_m(self, field, weights):
         """
-        Sum a scalar (single-channel) field over its lattice neighbors, weighted per direction, using local
-        jnp.roll for every axis and exactly one x-halo exchange per distinct x-shift shared by every lattice
-        direction with that shift (-1, 0 or +1 for every lattice this library supports).
+        Sum a scalar (single-channel) field over its lattice neighbors, using periodic rolls on configured
+        periodic axes and edge clamping on open axes. Perform exactly one x-halo exchange per distinct x-shift.
 
         Reused for two purposes, bound to their own static weights via functools.partial when scalar_neighbor_sum
         / scalar_force_stencil are built (see __init__): the G_ff-weighted neighbor sum used by
@@ -1275,14 +1316,7 @@ class Multiphase(LBMBase):
         (..., dim) for vector weights.
         """
         field = field.astype(self.precision_policy.compute_dtype)
-        x_shifted = {0: field}
-        for x_shift in (1, -1):
-            shifted = jnp.roll(field, x_shift, axis=0)
-            if x_shift == 1:
-                x_shifted[1] = shifted.at[:1].set(self.send_right(field[-1:], "x"))
-            else:
-                x_shifted[-1] = shifted.at[-1:].set(self.send_left(field[:1], "x"))
-
+        x_shifted = self._force_x_shifts(field)
         directions = np.array(self.lattice.c).T
         is_vector = weights.ndim == 2
         out_channels = weights.shape[0] if is_vector else 1
@@ -1291,10 +1325,7 @@ class Multiphase(LBMBase):
             w = weights[:, q_index] if is_vector else weights[q_index]
             if np.all(w == 0.0):
                 continue
-            base = x_shifted[int(direction[0])]
-            remaining_axes = tuple(int(component) for component in direction[1 : self.dim])
-            if any(remaining_axes):
-                base = jnp.roll(base, remaining_axes, axis=tuple(range(1, self.dim)))
+            base = self._force_neighbor(x_shifted, direction)
             total = total + base * jnp.asarray(w, dtype=self.precision_policy.compute_dtype)
         return total
 
@@ -1302,13 +1333,7 @@ class Multiphase(LBMBase):
         """Compute first- and second-power scalar surface moments with one pair of x halo exchanges."""
         psi = psi.astype(self.precision_policy.compute_dtype)
         field = jnp.concatenate((psi, jnp.square(psi)), axis=-1)
-        x_shifted = {0: field}
-        for x_shift in (1, -1):
-            shifted = jnp.roll(field, x_shift, axis=0)
-            if x_shift == 1:
-                x_shifted[1] = shifted.at[:1].set(self.send_right(field[-1:], "x"))
-            else:
-                x_shifted[-1] = shifted.at[-1:].set(self.send_left(field[:1], "x"))
+        x_shifted = self._force_x_shifts(field)
 
         directions = np.asarray(self.lattice.c).T
         n_moments = weights.shape[0]
@@ -1317,10 +1342,7 @@ class Multiphase(LBMBase):
             weight = weights[:, q_index]
             if np.all(weight == 0.0):
                 continue
-            base = x_shifted[int(direction[0])]
-            remaining_axes = tuple(int(component) for component in direction[1 : self.dim])
-            if any(remaining_axes):
-                base = jnp.roll(base, remaining_axes, axis=tuple(range(1, self.dim)))
+            base = self._force_neighbor(x_shifted, direction)
             total = total + base[..., :, None] * jnp.asarray(weight, dtype=self.precision_policy.compute_dtype)
         return total.reshape((*psi.shape[:-1], 2 * n_moments))
 

@@ -6,7 +6,7 @@ Multiphase.
 import jax.numpy as jnp
 import numpy as np
 
-from jax_lab.core.boundary_conditions import EquilibriumBC, Regularized, ZouHe
+from jax_lab.core.boundary_conditions import ConvectiveOutflow, EquilibriumBC, Regularized, ZouHe
 from jax_lab.core.eos import VanderWaals
 from jax_lab.core.lattice import LatticeD2Q9
 from jax_lab.core.models import BGKSim
@@ -146,3 +146,33 @@ def test_zouhe_velocity_matches_global_multiphase():
 
 def test_regularized_velocity_matches_global_multiphase():
     _check_multiphase(Regularized, "velocity", "bottom")
+
+
+def test_convective_outflow_preserves_known_populations():
+    class Sim(BGKSim):
+        def set_boundary_conditions(self):
+            indices = self.bounding_box_indices["bottom"]
+            self.BCs.append(ConvectiveOutflow(tuple(indices.T), self.grid_info, self.precision_policy))
+
+    sim = Sim(**_base_kwargs())
+    bc = sim.BCs[0]
+    rho = np.ones((sim.nx, sim.ny, 1), dtype=sim.precision_policy.compute_dtype)
+    velocity = np.zeros((sim.nx, sim.ny, 2), dtype=sim.precision_policy.compute_dtype)
+    velocity[..., 1] = -0.05
+    fout = sim.equilibrium(rho, velocity)
+    fin = np.asarray(fout).copy()
+    fin[bc.indices] *= 1.25
+
+    actual = np.asarray(bc.apply(fout, jnp.asarray(fin)))
+    boundary_indices = np.arange(len(bc.indices[0]))[:, None]
+    f_nbr = fout[bc.indices_nbr]
+    rho_nbr = jnp.sum(f_nbr, axis=-1, keepdims=True)
+    u_nbr = jnp.sum((jnp.dot(f_nbr, sim.lattice.c.T) / rho_nbr) * bc.normals, axis=-1, keepdims=True)
+    lambda_cbc = jnp.max(u_nbr)
+    previous_missing = jnp.asarray(fin)[bc.indices][boundary_indices, bc.iknown]
+    neighbor_missing = f_nbr[boundary_indices, bc.imissing]
+    expected_missing = (previous_missing + lambda_cbc * neighbor_missing) / (1 + lambda_cbc)
+    expected = np.asarray(fout[bc.indices]).copy()
+    expected[bc.imissing_mask] = np.asarray(expected_missing)[bc.imissing_mask]
+
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)

@@ -1495,21 +1495,13 @@ class ConvectiveOutflow(BoundaryCondition):
         u_nbr = jnp.sum((jnp.dot(f_nbr, self.lattice.c.T) / rho_nbr) * self.normals, axis=-1, keepdims=True)
         lambda_cbc = jnp.max(u_nbr)
 
-        # Retrieve previous timestep's imissing values (stored in iknown slots during PostCollision)
+        # The opposite-direction slots at the boundary retain the previous populations
+        # that streamed out of the domain during PostCollision.
         f_prev_missing = fin[self.indices][bindex, self.iknown]
+        f_new_missing = (f_prev_missing + lambda_cbc * f_nbr[bindex, self.imissing]) / (1 + lambda_cbc)
 
-        # Start from post-streaming values (correct for known directions)
-        # fbd = fout[self.indices]
-        # Apply convective formula to missing directions only
-        # f_new_missing = (f_prev_missing + lambda_cbc * f_nbr[bindex, self.imissing]) / (1 + lambda_cbc)
-        # f_new_missing = (1 - lambda_cbc) * f_prev_missing + lambda_cbc * f_nbr[bindex, self.imissing]
-        # fbd = fbd.at[bindex, self.imissing].set(f_new_missing)
-
-        f_prev_missing = fin[self.indices]
-        # fbd = (f_prev_missing + lambda_cbc * f_nbr) / (1 + lambda_cbc)
-        fbd = (1 - lambda_cbc) * f_nbr + lambda_cbc * f_prev_missing
-
-        return fbd
+        fbd = fout[self.indices]
+        return jnp.where(self.imissing_mask, f_new_missing, fbd)
 
 
 class ExtrapolationOutflowMultiphase(BoundaryCondition):
